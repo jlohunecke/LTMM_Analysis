@@ -1,0 +1,211 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CSV Debug</title>
+    <script src="https://unpkg.com/papaparse@5.4.1/papaparse.min.js"></script>
+</head>
+<body>
+    <h1>CSV Debug Output</h1>
+    <div id="output"></div>
+    
+    <script>
+        let isReloading = false;
+        let allViolations = [];
+        let filteredViolations = [];
+
+        function applyFilters() {
+            const filterType = document.getElementById('filterType').value;
+            const filterPigId = document.getElementById('filterPigId').value;
+            
+            let filtered = allViolations;
+            
+            if (filterType !== 'all') {
+                filtered = filtered.filter(v => v.type === filterType);
+            }
+            
+            if (filterPigId.trim()) {
+                filtered = filtered.filter(v => 
+                    v.pigId.toLowerCase().includes(filterPigId.toLowerCase())
+                );
+            }
+            
+            filteredViolations = filtered;
+            updateDisplay();
+        }
+
+        function updateDisplay() {
+            const outputDiv = document.getElementById('output');
+            if (!outputDiv) return;
+            
+            outputDiv.innerHTML = `
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
+                    <h2>Debug Results:</h2>
+                    <div style="display: flex; align-items: center; gap: 10px;">
+                        <span style="color: blue;">ℹ Manual refresh only (use Cmd+R or button)</span>
+                        <button onclick="debugCSV()" style="padding: 8px 16px; background: #3b82f6; color: white; border: none; border-radius: 4px; cursor: pointer;">Refresh Now</button>
+                    </div>
+                </div>
+                
+                <div style="margin-bottom: 20px; padding: 15px; background: #f8f9fa; border-radius: 8px;">
+                    <h3 style="margin-top: 0;">Filters</h3>
+                    <div style="display: grid; grid-template-columns: 1fr 1fr auto; gap: 15px; align-items: end;">
+                        <div>
+                            <label style="display: block; margin-bottom: 5px; font-weight: 500;">Violation Type:</label>
+                            <select id="filterType" onchange="applyFilters()" style="width: 100%; padding: 8px; border: 1px solid #ddd; border-radius: 4px;">
+                                <option value="all">All Types</option>
+                                <option value="chronological_order">Chronological Order</option>
+                                <option value="duplicate_timestamps">Duplicate Timestamps</option>
+                                <option value="last_timestamp_not_end">Last Not End</option>
+                            </select>
+                        </div>
+                        <div>
+                            <label style="display: block; margin-bottom: 5px; font-weight: 500;">Pig ID (contains):</label>
+                            <input type="text" id="filterPigId" oninput="applyFilters()" placeholder="e.g., CO-016" style="width: 100%; padding: 8px; border: 1px solid #ddd; border-radius: 4px;">
+                        </div>
+                        <div>
+                            <button onclick="clearFilters()" style="padding: 8px 16px; background: #6c757d; color: white; border: none; border-radius: 4px; cursor: pointer;">Clear Filters</button>
+                        </div>
+                    </div>
+                </div>
+                
+                <p><strong>Total rows parsed:</strong> ${window.totalRows || 0}</p>
+                <p><strong>Total violations found:</strong> ${allViolations.length}</p>
+                <p><strong>Showing violations:</strong> ${filteredViolations.length}</p>
+                <p><strong>Last updated:</strong> ${new Date().toLocaleTimeString()}</p>
+                
+                ${filteredViolations.length === 0 && allViolations.length > 0 ? 
+                    '<div style="background: #fff3cd; border: 1px solid #ffeaa7; padding: 15px; border-radius: 4px; margin: 15px 0;"><strong>No violations found</strong> with current filters. Try adjusting your criteria.</div>' : ''}
+                
+                ${filteredViolations.length > 0 ? `
+                    <h3>Sample violations:</h3>
+                    <ul>
+                        ${filteredViolations.slice(0, 10).map(v => `<li><strong>${v.pigId}</strong>: ${v.description}</li>`).join('')}
+                    </ul>
+                    ${filteredViolations.length > 10 ? `<p><em>... and ${filteredViolations.length - 10} more violations</em></p>` : ''}
+                ` : ''}
+            `;
+        }
+
+        function clearFilters() {
+            document.getElementById('filterType').value = 'all';
+            document.getElementById('filterPigId').value = '';
+            applyFilters();
+        }
+
+        async function debugCSV() {
+            if (isReloading) return;
+            
+            try {
+                isReloading = true;
+                
+                const response = await fetch('complete_wear_periods_reformatted.csv');
+                if (!response.ok) {
+                    throw new Error(`Failed to load CSV: ${response.statusText}`);
+                }
+                const csvData = await response.text();
+                
+                console.log('Raw CSV data (first 500 chars):', csvData.substring(0, 500));
+                
+                const parsed = Papa.parse(csvData, {
+                    header: true,
+                    skipEmptyLines: true,
+                    dynamicTyping: false,
+                    delimitersToGuess: [',', '\t', '|', ';'],
+                    transformHeader: (header) => header.trim()
+                });
+                
+                console.log('Parsed data:', parsed);
+                console.log('First row:', parsed.data[0]);
+                console.log('Total rows:', parsed.data.length);
+                
+                // Check for violations manually
+                const violations = [];
+                window.totalRows = parsed.data.length;
+                
+                parsed.data.forEach((row, rowIndex) => {
+                    const pigId = row.pig_id?.trim();
+                    const timestamps = [];
+                    
+                    // Extract all timestamps from the row
+                    Object.keys(row).forEach(key => {
+                        if (key.startsWith('wear_') && row[key] && row[key].trim()) {
+                            const timestamp = row[key].trim();
+                            const columnType = key.includes('start') ? 'start' : 'end';
+                            const periodNumber = key.match(/\d+/)?.[0] || '0';
+                            timestamps.push({
+                                value: timestamp,
+                                column: key,
+                                type: columnType,
+                                period: parseInt(periodNumber),
+                                date: new Date(timestamp)
+                            });
+                        }
+                    });
+                    
+                    // Sort timestamps by their order in the columns
+                    timestamps.sort((a, b) => {
+                        if (a.period !== b.period) return a.period - b.period;
+                        return a.type === 'start' ? -1 : 1;
+                    });
+                    
+                    console.log(`Pig ${pigId} has ${timestamps.length} timestamps:`, timestamps);
+                    
+                    if (timestamps.length === 0) return;
+                    
+                    // Check condition 1: Later columns should have later timestamps
+                    for (let i = 1; i < timestamps.length; i++) {
+                        if (timestamps[i].date < timestamps[i-1].date) {
+                            violations.push({
+                                pigId,
+                                type: 'chronological_order',
+                                description: `Timestamp in ${timestamps[i].column} (${timestamps[i].value}) is earlier than ${timestamps[i-1].column} (${timestamps[i-1].value})`
+                            });
+                        }
+                    }
+                    
+                    // Check condition 2: No two timestamps should be equal
+                    for (let i = 1; i < timestamps.length; i++) {
+                        if (timestamps[i].date.getTime() === timestamps[i-1].date.getTime()) {
+                            violations.push({
+                                pigId,
+                                type: 'duplicate_timestamps',
+                                description: `Equal timestamps found: ${timestamps[i-1].column} and ${timestamps[i].column} both have ${timestamps[i].value}`
+                            });
+                        }
+                    }
+                    
+                    // Check condition 3: Last timestamp should be in a wear_end_x column
+                    if (timestamps.length > 0) {
+                        const lastTimestamp = timestamps[timestamps.length - 1];
+                        if (lastTimestamp.type !== 'end') {
+                            violations.push({
+                                pigId,
+                                type: 'last_timestamp_not_end',
+                                description: `Last timestamp is in ${lastTimestamp.column} (should be wear_end_x)`
+                            });
+                        }
+                    }
+                });
+                
+                console.log('Found violations:', violations);
+                
+                allViolations = violations;
+                filteredViolations = violations;
+                updateDisplay();
+                
+                isReloading = false;
+                
+            } catch (error) {
+                console.error('Error:', error);
+                document.getElementById('output').innerHTML = `<p style="color: red;">Error: ${error.message}</p>`;
+                isReloading = false;
+            }
+        }
+        
+        // Initial load
+        debugCSV();
+    </script>
+</body>
+</html>

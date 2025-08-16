@@ -1,0 +1,317 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Pig Wear Period Timestamp Analysis</title>
+    <script src="https://unpkg.com/react@18/umd/react.development.js"></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+    <script src="https://unpkg.com/papaparse@5.4.1/papaparse.min.js"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+</head>
+<body>
+    <div id="root"></div>
+    
+    <script type="text/babel">
+        // Mock file system API for browser environment
+        window.fs = {
+            readFile: async (filename) => {
+                const response = await fetch(filename);
+                if (!response.ok) {
+                    throw new Error(`Failed to load ${filename}: ${response.statusText}`);
+                }
+                return await response.text();
+            }
+        };
+
+        // Import the React component
+        const { useState, useEffect } = React;
+
+        const TimestampAnalysis = () => {
+            const [data, setData] = useState([]);
+            const [violations, setViolations] = useState([]);
+            const [filteredViolations, setFilteredViolations] = useState([]);
+            const [loading, setLoading] = useState(true);
+            const [filterType, setFilterType] = useState('all');
+            const [filterPigId, setFilterPigId] = useState('');
+
+
+            const loadAndAnalyzeData = async () => {
+                try {
+                    setLoading(true);
+                    
+                    const csvData = await window.fs.readFile('complete_wear_periods_reformatted.csv');
+                    
+                    const parsed = Papa.parse(csvData, {
+                        header: true,
+                        skipEmptyLines: true,
+                        dynamicTyping: false,
+                        delimitersToGuess: [',', '\t', '|', ';'],
+                        transformHeader: (header) => header.trim()
+                    });
+
+                    console.log('Parsed CSV data:', parsed.data.length, 'rows');
+                    console.log('First row:', parsed.data[0]);
+
+                    const processedData = parsed.data.map(row => {
+                        const pigId = row.pig_id?.trim();
+                        const timestamps = [];
+                        
+                        // Extract all timestamps from the row
+                        Object.keys(row).forEach(key => {
+                            if (key.startsWith('wear_') && row[key] && row[key].trim()) {
+                                const timestamp = row[key].trim();
+                                const columnType = key.includes('start') ? 'start' : 'end';
+                                const periodNumber = key.match(/\d+/)?.[0] || '0';
+                                timestamps.push({
+                                    value: timestamp,
+                                    column: key,
+                                    type: columnType,
+                                    period: parseInt(periodNumber),
+                                    date: new Date(timestamp)
+                                });
+                            }
+                        });
+                        
+                        // Sort timestamps by their order in the columns
+                        timestamps.sort((a, b) => {
+                            if (a.period !== b.period) return a.period - b.period;
+                            return a.type === 'start' ? -1 : 1;
+                        });
+                        
+                        return { pigId, timestamps };
+                    });
+
+                    setData(processedData);
+                    
+                    // Analyze violations
+                    const foundViolations = [];
+                    
+                    processedData.forEach(({ pigId, timestamps }) => {
+                        if (timestamps.length === 0) return;
+                        
+                        // Check condition 1: Later columns should have later timestamps
+                        for (let i = 1; i < timestamps.length; i++) {
+                            if (timestamps[i].date < timestamps[i-1].date) {
+                                foundViolations.push({
+                                    pigId,
+                                    type: 'chronological_order',
+                                    description: `Timestamp in ${timestamps[i].column} (${timestamps[i].value}) is earlier than ${timestamps[i-1].column} (${timestamps[i-1].value})`
+                                });
+                            }
+                        }
+                        
+                        // Check condition 2: No two timestamps should be equal
+                        for (let i = 1; i < timestamps.length; i++) {
+                            if (timestamps[i].date.getTime() === timestamps[i-1].date.getTime()) {
+                                foundViolations.push({
+                                    pigId,
+                                    type: 'duplicate_timestamps',
+                                    description: `Equal timestamps found: ${timestamps[i-1].column} and ${timestamps[i].column} both have ${timestamps[i].value}`
+                                });
+                            }
+                        }
+                        
+                        // Check condition 3: Last timestamp should be in a wear_end_x column
+                        if (timestamps.length > 0) {
+                            const lastTimestamp = timestamps[timestamps.length - 1];
+                            if (lastTimestamp.type !== 'end') {
+                                foundViolations.push({
+                                    pigId,
+                                    type: 'last_timestamp_not_end',
+                                    description: `Last timestamp is in ${lastTimestamp.column} (should be wear_end_x)`
+                                });
+                            }
+                        }
+                    });
+                    
+                                            console.log('Found violations:', foundViolations.length);
+                        setViolations(foundViolations);
+                        setFilteredViolations(foundViolations);
+                        setLoading(false);
+                } catch (error) {
+                    console.error('Error processing data:', error);
+                    setLoading(false);
+                }
+            };
+
+            useEffect(() => {
+                loadAndAnalyzeData();
+            }, []);
+
+            // Filter violations based on current filters
+            const applyFilters = () => {
+                let filtered = violations;
+                
+                if (filterType !== 'all') {
+                    filtered = filtered.filter(v => v.type === filterType);
+                }
+                
+                if (filterPigId.trim()) {
+                    filtered = filtered.filter(v => 
+                        v.pigId.toLowerCase().includes(filterPigId.toLowerCase())
+                    );
+                }
+                
+                setFilteredViolations(filtered);
+            };
+
+            // Apply filters when filters change
+            React.useEffect(() => {
+                applyFilters();
+            }, [filterType, filterPigId, violations]);
+
+            if (loading) {
+                return React.createElement('div', { className: 'p-4' }, 'Loading and analyzing data...');
+            }
+
+            const violationsByType = violations.reduce((acc, v) => {
+                acc[v.type] = (acc[v.type] || 0) + 1;
+                return acc;
+            }, {});
+
+            return React.createElement('div', { className: 'p-6 max-w-6xl mx-auto' },
+                React.createElement('div', { className: 'flex justify-between items-center mb-6' },
+                    React.createElement('h1', { className: 'text-2xl font-bold' }, 'Pig Wear Period Timestamp Analysis'),
+                    React.createElement('div', { className: 'flex items-center space-x-4' },
+                        loading && React.createElement('div', { className: 'flex items-center text-blue-600' },
+                            React.createElement('div', { className: 'animate-spin rounded-full h-4 w-4 border-b-2 border-blue-600 mr-2' }),
+                            'Loading...'
+                        ),
+                        React.createElement('button', { 
+                            onClick: loadAndAnalyzeData,
+                            className: 'px-4 py-2 bg-blue-500 text-white rounded hover:bg-blue-600 transition-colors'
+                        }, 'Refresh Data')
+                    )
+                ),
+                
+                React.createElement('div', { className: 'grid grid-cols-1 md:grid-cols-3 gap-4 mb-6' },
+                    React.createElement('div', { className: 'bg-blue-50 border border-blue-200 rounded-lg p-4' },
+                        React.createElement('h3', { className: 'font-semibold text-blue-800' }, 'Total Pigs'),
+                        React.createElement('p', { className: 'text-2xl text-blue-600' }, data.length)
+                    ),
+                    React.createElement('div', { className: 'bg-red-50 border border-red-200 rounded-lg p-4' },
+                        React.createElement('h3', { className: 'font-semibold text-red-800' }, 'Total Violations'),
+                        React.createElement('p', { className: 'text-2xl text-red-600' }, violations.length),
+                        React.createElement('p', { className: 'text-sm text-red-700' }, `Showing: ${filteredViolations.length}`)
+                    ),
+                    React.createElement('div', { className: 'bg-green-50 border border-green-200 rounded-lg p-4' },
+                        React.createElement('h3', { className: 'font-semibold text-green-800' }, 'Clean Pigs'),
+                        React.createElement('p', { className: 'text-2xl text-green-600' }, data.length - new Set(violations.map(v => v.pigId)).size)
+                    )
+                ),
+
+                React.createElement('div', { className: 'mb-6' },
+                    React.createElement('h2', { className: 'text-xl font-semibold mb-4' }, 'Filters'),
+                    React.createElement('div', { className: 'grid grid-cols-1 md:grid-cols-3 gap-4 mb-4' },
+                        React.createElement('div', null,
+                            React.createElement('label', { className: 'block text-sm font-medium text-gray-700 mb-2' }, 'Violation Type'),
+                            React.createElement('select', { 
+                                value: filterType,
+                                onChange: (e) => setFilterType(e.target.value),
+                                className: 'w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500'
+                            },
+                                React.createElement('option', { value: 'all' }, 'All Types'),
+                                React.createElement('option', { value: 'chronological_order' }, 'Chronological Order'),
+                                React.createElement('option', { value: 'duplicate_timestamps' }, 'Duplicate Timestamps'),
+                                React.createElement('option', { value: 'last_timestamp_not_end' }, 'Last Not End')
+                            )
+                        ),
+                        React.createElement('div', null,
+                            React.createElement('label', { className: 'block text-sm font-medium text-gray-700 mb-2' }, 'Pig ID (contains)'),
+                            React.createElement('input', { 
+                                type: 'text',
+                                value: filterPigId,
+                                onChange: (e) => setFilterPigId(e.target.value),
+                                placeholder: 'e.g., CO-016',
+                                className: 'w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500'
+                            })
+                        ),
+                        React.createElement('div', { className: 'flex items-end' },
+                            React.createElement('button', { 
+                                onClick: () => { setFilterType('all'); setFilterPigId(''); },
+                                className: 'px-4 py-2 bg-gray-500 text-white rounded hover:bg-gray-600 transition-colors'
+                            }, 'Clear Filters')
+                        )
+                    )
+                ),
+
+                React.createElement('div', { className: 'mb-6' },
+                    React.createElement('h2', { className: 'text-xl font-semibold mb-4' }, 'Violation Summary'),
+                    React.createElement('div', { className: 'grid grid-cols-1 md:grid-cols-3 gap-4' },
+                        React.createElement('div', { className: 'bg-yellow-50 border border-yellow-200 rounded-lg p-4' },
+                            React.createElement('h4', { className: 'font-medium text-yellow-800' }, 'Chronological Order'),
+                            React.createElement('p', { className: 'text-lg text-yellow-600' }, violationsByType.chronological_order || 0),
+                            React.createElement('p', { className: 'text-sm text-yellow-700' }, 'Later columns with earlier timestamps')
+                        ),
+                        React.createElement('div', { className: 'bg-orange-50 border border-orange-200 rounded-lg p-4' },
+                            React.createElement('h4', { className: 'font-medium text-orange-800' }, 'Duplicate Timestamps'),
+                            React.createElement('p', { className: 'text-lg text-orange-600' }, violationsByType.duplicate_timestamps || 0),
+                            React.createElement('p', { className: 'text-sm text-orange-700' }, 'Equal timestamps in same row')
+                        ),
+                        React.createElement('div', { className: 'bg-purple-50 border border-purple-200 rounded-lg p-4' },
+                            React.createElement('h4', { className: 'font-medium text-purple-800' }, 'Last Not End'),
+                            React.createElement('p', { className: 'text-lg text-purple-600' }, violationsByType.last_timestamp_not_end || 0),
+                            React.createElement('p', { className: 'text-sm text-purple-700' }, 'Last timestamp not in wear_end_x')
+                        )
+                    )
+                ),
+
+                filteredViolations.length > 0 && React.createElement('div', { className: 'mb-6' },
+                    React.createElement('h2', { className: 'text-xl font-semibold mb-4' }, `Detailed Violations (${filteredViolations.length} of ${violations.length})`),
+                    React.createElement('div', { className: 'bg-white border rounded-lg overflow-hidden' },
+                        React.createElement('div', { className: 'max-h-96 overflow-y-auto' },
+                            React.createElement('table', { className: 'w-full text-sm' },
+                                React.createElement('thead', { className: 'bg-gray-50 sticky top-0' },
+                                    React.createElement('tr', null,
+                                        React.createElement('th', { className: 'px-4 py-2 text-left' }, 'Pig ID'),
+                                        React.createElement('th', { className: 'px-4 py-2 text-left' }, 'Violation Type'),
+                                        React.createElement('th', { className: 'px-4 py-2 text-left' }, 'Description')
+                                    )
+                                ),
+                                React.createElement('tbody', null,
+                                    filteredViolations.map((violation, index) => 
+                                        React.createElement('tr', { key: index, className: index % 2 === 0 ? 'bg-gray-50' : 'bg-white' },
+                                            React.createElement('td', { className: 'px-4 py-2 font-mono' }, violation.pigId),
+                                            React.createElement('td', { className: 'px-4 py-2' },
+                                                React.createElement('span', { 
+                                                    className: `px-2 py-1 rounded text-xs ${
+                                                        violation.type === 'chronological_order' ? 'bg-yellow-100 text-yellow-800' :
+                                                        violation.type === 'duplicate_timestamps' ? 'bg-orange-100 text-orange-800' :
+                                                        'bg-purple-100 text-purple-800'
+                                                    }`
+                                                }, violation.type.replace('_', ' ').toUpperCase())
+                                            ),
+                                            React.createElement('td', { className: 'px-4 py-2' }, violation.description)
+                                        )
+                                    )
+                                )
+                            )
+                        )
+                    )
+                ),
+
+                filteredViolations.length === 0 && violations.length > 0 && React.createElement('div', { className: 'mb-6' },
+                    React.createElement('div', { className: 'bg-yellow-50 border border-yellow-200 rounded-lg p-4' },
+                        React.createElement('h3', { className: 'font-semibold text-yellow-800' }, 'No Violations Found'),
+                        React.createElement('p', { className: 'text-yellow-700' }, 'No violations match the current filters. Try adjusting your filter criteria.')
+                    )
+                ),
+
+                React.createElement('div', { className: 'bg-gray-50 border rounded-lg p-4' },
+                    React.createElement('h3', { className: 'font-semibold mb-2' }, 'Analysis Summary'),
+                    React.createElement('div', { className: 'text-sm space-y-1' },
+                        React.createElement('p', null, React.createElement('strong', null, 'Condition 1:'), ' Timestamps in later columns should be chronologically after earlier columns'),
+                        React.createElement('p', null, React.createElement('strong', null, 'Condition 2:'), ' No two timestamps in a row should be equal'),
+                        React.createElement('p', null, React.createElement('strong', null, 'Condition 3:'), ' The last timestamp in each row should be in a wear_end_x column')
+                    )
+                )
+            );
+        };
+
+        // Render the component
+        ReactDOM.render(React.createElement(TimestampAnalysis), document.getElementById('root'));
+    </script>
+</body>
+</html>
