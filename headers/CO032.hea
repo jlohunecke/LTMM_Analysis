@@ -1,0 +1,9 @@
+CO032 6 100 24649433
+CO032.dat 16 6504.4893(-3916)/g 0 0 -1058 28758 0 v-acceleration
+CO032.dat 16 8876.563(-884)/g 0 0 1872 -3894 0 ml-acceleration
+CO032.dat 16 5463.8346(16)/g 0 0 -3474 -4540 0 ap-acceleration
+CO032.dat 16 149.0527(96)/degrees/s 0 0 -1849 29717 0 yaw-velocity
+CO032.dat 16 151.1654(-651)/degrees/s 0 0 1462 30201 0 pitch-velocity
+CO032.dat 16 144.9321(-211)/degrees/s 0 0 3676 11347 0 roll-velocity
+#Age:81.94
+#Sex:M

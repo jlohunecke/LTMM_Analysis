@@ -1,0 +1,9 @@
+CO029_n 6 100 26999977
+CO029_n.dat 16 5594.5611(120)/g 0 0 2545 22396 0 v-acceleration
+CO029_n.dat 16 5637.2473(136)/g 0 0 880 -3951 0 ml-acceleration
+CO029_n.dat 16 5517.1923(192)/g 0 0 -4002 -32648 0 ap-acceleration
+CO029_n.dat 16 145.8517(-1151)/degrees/s 0 0 2020 -30101 0 yaw-velocity
+CO029_n.dat 16 141.7638(-1261)/degrees/s 0 0 -2138 10934 0 pitch-velocity
+CO029_n.dat 16 141.5544(633)/degrees/s 0 0 3529 20263 0 roll-velocity
+#Age:76.64
+#Sex:F

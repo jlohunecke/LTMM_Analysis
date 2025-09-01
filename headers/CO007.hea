@@ -1,0 +1,9 @@
+CO007 6 100 26999977
+CO007.dat 16 16943.7565(-136)/g 0 0 -1745 21030 0 v-acceleration
+CO007.dat 16 16735.6612(-232)/g 0 0 2737 5540 0 ml-acceleration
+CO007.dat 16 16463.5366(72)/g 0 0 -15383 16372 0 ap-acceleration
+CO007.dat 16 145.4383(423)/degrees/s 0 0 6018 -13834 0 yaw-velocity
+CO007.dat 16 139.4163(223)/degrees/s 0 0 6196 -2265 0 pitch-velocity
+CO007.dat 16 82.4163(-810)/degrees/s 0 0 2233 -12856 0 roll-velocity
+#Age:76.62
+#Sex:F

@@ -1,0 +1,9 @@
+FL014 6 100 26999977
+FL014.dat 16 6490.7057(-4241)/g 0 0 -3227 9697 0 v-acceleration
+FL014.dat 16 6680.9929(6780)/g 0 0 6973 -4981 0 ml-acceleration
+FL014.dat 16 5525.196(-120)/g 0 0 -4946 13926 0 ap-acceleration
+FL014.dat 16 143.2334(-255)/degrees/s 0 0 533 9136 0 yaw-velocity
+FL014.dat 16 144.7943(-944)/degrees/s 0 0 -3941 -22924 0 pitch-velocity
+FL014.dat 16 143.0068(1164)/degrees/s 0 0 2924 5988 0 roll-velocity
+#Age:80.74
+#Sex:F

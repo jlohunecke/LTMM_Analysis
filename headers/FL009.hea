@@ -1,0 +1,9 @@
+FL009 6 100 8979770
+FL009.dat 16 9332.0562(-18550)/g 0 0 -15844 -28517 0 v-acceleration
+FL009.dat 16 16339.6192(-2609)/g 0 0 2896 -713 0 ml-acceleration
+FL009.dat 16 9458.325(-4725)/g 0 0 -11735 -28318 0 ap-acceleration
+FL009.dat 16 156.3182(-203)/degrees/s 0 0 3750 7673 0 yaw-velocity
+FL009.dat 16 148.8045(-228)/degrees/s 0 0 3562 1870 0 pitch-velocity
+FL009.dat 16 140.4407(-126)/degrees/s 0 0 2284 -29658 0 roll-velocity
+#Age:70.23
+#Sex:F

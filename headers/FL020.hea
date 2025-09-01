@@ -1,0 +1,9 @@
+FL020 6 100 26999977
+FL020.dat 16 6218.7764(-4509)/g 0 0 -865 -19089 0 v-acceleration
+FL020.dat 16 5578.2889(-670)/g 0 0 -3007 -23544 0 ml-acceleration
+FL020.dat 16 6382.0082(5525)/g 0 0 9 -8101 0 ap-acceleration
+FL020.dat 16 156.311(-205)/degrees/s 0 0 1861 15144 0 yaw-velocity
+FL020.dat 16 148.8022(-228)/degrees/s 0 0 4675 23570 0 pitch-velocity
+FL020.dat 16 140.4364(-125)/degrees/s 0 0 -3070 -7398 0 roll-velocity
+#Age:80.12
+#Sex:F

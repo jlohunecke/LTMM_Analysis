@@ -1,0 +1,9 @@
+FL026 6 100 25141341
+FL026.dat 16 5597.229(-592)/g 0 0 2577 13443 0 v-acceleration
+FL026.dat 16 5575.8858(-112)/g 0 0 -1040 3664 0 ml-acceleration
+FL026.dat 16 5735.4846(1789)/g 0 0 -2721 28490 0 ap-acceleration
+FL026.dat 16 143.0312(184)/degrees/s 0 0 -5338 -453 0 yaw-velocity
+FL026.dat 16 87.2392(-193)/degrees/s 0 0 -2417 -24678 0 pitch-velocity
+FL026.dat 16 84.031(-138)/degrees/s 0 0 -1553 2503 0 roll-velocity
+#Age:73
+#Sex:M

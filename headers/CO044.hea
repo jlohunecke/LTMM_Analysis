@@ -1,0 +1,9 @@
+CO044 6 100 26247855
+CO044.dat 16 5463.8346(16)/g 0 0 2209 -1157 0 v-acceleration
+CO044.dat 16 7110.2793(-1521)/g 0 0 -1750 -10276 0 ml-acceleration
+CO044.dat 16 5463.8346(16)/g 0 0 -4322 6289 0 ap-acceleration
+CO044.dat 16 149.0527(96)/degrees/s 0 0 5900 23842 0 yaw-velocity
+CO044.dat 16 151.1538(-652)/degrees/s 0 0 1234 12010 0 pitch-velocity
+CO044.dat 16 144.9277(-211)/degrees/s 0 0 2376 21662 0 roll-velocity
+#Age:81.51
+#Sex:F
