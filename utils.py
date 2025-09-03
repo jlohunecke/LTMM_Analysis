@@ -296,10 +296,11 @@ def compare_cohorts_daily_signal(
     fl_pattern="FL*.csv", 
     folder="minute_level_modified", 
     columns=None, 
-    window=30
+    window=30,
+    plot_minmax=False
 ):
     """
-    Load, process, and plot comparison of two cohorts.
+    Load, process, and plot comparison of two cohorts using quartiles as 2D whisker plots.
     
     Parameters:
         co_pattern: str, filename pattern for CO cohort
@@ -307,6 +308,7 @@ def compare_cohorts_daily_signal(
         folder: str, folder containing the CSV files
         columns: list of str, columns to plot (default: ['x','y','z','enmo'])
         window: int, rolling window size for smoothing
+        plot_minmax: bool, whether to plot min/max whiskers (default: False)
     """
     if columns is None:
         columns = ['x','y','z','enmo']
@@ -334,42 +336,94 @@ def compare_cohorts_daily_signal(
     fl_data = load_and_concat(fl_files)
     
     # ----------------------
-    # Group by hour
+    # Group by hour and compute quartiles
     # ----------------------
-    def group_by_hour(df, column):
-        grouped = df.groupby('hour')[[column]].agg(['mean','std']).reset_index()
-        grouped[(column,'mean')] = grouped[(column,'mean')].rolling(window=window, center=True, min_periods=1).mean()
-        grouped[(column,'std')] = grouped[(column,'std')].rolling(window=window, center=True, min_periods=1).mean()
+    def group_by_hour_quartiles(df, column):
+        # Use proper pandas aggregation methods
+        grouped = df.groupby('hour')[column].agg(['mean']).reset_index()
+        # Add quantiles using the quantile method
+        grouped['q25'] = df.groupby('hour')[column].quantile(0.25).values
+        grouped['q50'] = df.groupby('hour')[column].quantile(0.50).values
+        grouped['q75'] = df.groupby('hour')[column].quantile(0.75).values
+        
+        # Add min/max if requested
+        if plot_minmax:
+            grouped['min'] = df.groupby('hour')[column].min().values
+            grouped['max'] = df.groupby('hour')[column].max().values
+        
+        # Apply rolling window smoothing to all columns
+        stats_to_smooth = ['mean', 'q25', 'q50', 'q75']
+        if plot_minmax:
+            stats_to_smooth.extend(['min', 'max'])
+        
+        for stat in stats_to_smooth:
+            grouped[stat] = grouped[stat].rolling(window=window, center=True, min_periods=1).mean()
         return grouped
     
     # ----------------------
     # Plot
     # ----------------------
     for column in columns:
-        co_grouped = group_by_hour(co_data, column)
-        fl_grouped = group_by_hour(fl_data, column)
+        co_grouped = group_by_hour_quartiles(co_data, column)
+        fl_grouped = group_by_hour_quartiles(fl_data, column)
         
-        plt.figure(figsize=(12,3))
-        plt.plot(co_grouped['hour'], co_grouped[(column,'mean')], color='blue', label='CO mean')
-        plt.fill_between(co_grouped['hour'],
-                         co_grouped[(column,'mean')] - co_grouped[(column,'std')],
-                         co_grouped[(column,'mean')] + co_grouped[(column,'std')],
-                         color='blue', alpha=0.3, label='CO ±1 std')
+        plt.figure(figsize=(12, 3))
         
-        plt.plot(fl_grouped['hour'], fl_grouped[(column,'mean')], color='red', label='FL mean')
-        plt.fill_between(fl_grouped['hour'],
-                         fl_grouped[(column,'mean')] - fl_grouped[(column,'std')],
-                         fl_grouped[(column,'mean')] + fl_grouped[(column,'std')],
-                         color='red', alpha=0.3, label='FL ±1 std')
+        # Plot CO cohort
+        co_hours = co_grouped['hour']
+        co_mean = co_grouped['mean']
+        co_q1 = co_grouped['q25']
+        co_q2 = co_grouped['q50']
+        co_q3 = co_grouped['q75']
+        
+        # Plot min/max whiskers if requested
+        if plot_minmax:
+            co_min = co_grouped['min']
+            co_max = co_grouped['max']
+            plt.plot(co_hours, co_min, color='blue', alpha=0.7, linewidth=0.8, label='CO min/max')
+            plt.plot(co_hours, co_max, color='blue', alpha=0.7, linewidth=0.8)
+        
+        # Plot IQR box (Q1 to Q3)
+        plt.fill_between(co_hours, co_q1, co_q3, color='blue', alpha=0.3, label='CO IQR')
+        
+        # Plot mean as solid line
+        plt.plot(co_hours, co_mean, color='blue', linewidth=2, label='CO mean')
+        
+        # Plot median as dashed line
+        plt.plot(co_hours, co_q2, color='blue', linewidth=2, linestyle='--', label='CO median')
+        
+        # Plot FL cohort
+        fl_hours = fl_grouped['hour']
+        fl_mean = fl_grouped['mean']
+        fl_q1 = fl_grouped['q25']
+        fl_q2 = fl_grouped['q50']
+        fl_q3 = fl_grouped['q75']
+        
+        # Plot min/max whiskers if requested
+        if plot_minmax:
+            fl_min = fl_grouped['min']
+            fl_max = fl_grouped['max']
+            plt.plot(fl_hours, fl_min, color='red', alpha=0.7, linewidth=0.8, label='FL min/max')
+            plt.plot(fl_hours, fl_max, color='red', alpha=0.7, linewidth=0.8)
+        
+        # Plot IQR box (Q1 to Q3)
+        plt.fill_between(fl_hours, fl_q1, fl_q3, color='red', alpha=0.3, label='FL IQR')
+        
+        # Plot mean as solid line
+        plt.plot(fl_hours, fl_mean, color='red', linewidth=2, label='FL mean')
+        
+        # Plot median as dashed line
+        plt.plot(fl_hours, fl_q2, color='red', linewidth=2, linestyle='--', label='FL median')
         
         plt.xlabel('Hour of Day')
         plt.ylabel(column)
-        plt.title(f'Comparison of {column} Average Daily Signal ±1 STD')
+        title_suffix = " with Min/Max" if plot_minmax else ""
+        plt.title(f'Comparison of {column} Daily Signal: Mean (solid), Median (dashed), and IQR{title_suffix}')
         plt.legend()
         plt.xlim(0, 24)
         plt.grid(alpha=0.3)
         
-        ticks = np.arange(0,25,6)
+        ticks = np.arange(0, 25, 6)
         tick_labels = [f'{int(t):02d}:00' for t in ticks]
         plt.xticks(ticks, tick_labels)
         plt.show()
@@ -440,51 +494,82 @@ def load_cohort_data(modified_dir="minute_level_modified", header_dir="headers",
 
 import matplotlib.pyplot as plt
 
-def plot_cohort_feature_comparison(co_features, fl_features, title=None):
+def plot_cohort_feature_comparison(co_features, fl_features, title=None, plot_minmax=True):
     """
-    Plots a horizontal bar chart comparing two cohorts for a set of features.
+    Plots a horizontal bar chart comparing two cohorts for a set of features using quartiles, mean, max, and median.
     
     Args:
-        co_features: Object with method `get_summary_dataframe()` returning a dataframe with columns ['feature', 'mean', 'std'] for CO cohort.
-        fl_features: Object with method `get_summary_dataframe()` returning a dataframe with columns ['feature', 'mean', 'std'] for FL cohort.
+        co_features: Object with method `get_individual_features()` returning individual feature data for CO cohort.
+        fl_features: Object with method `get_individual_features()` returning individual feature data for FL cohort.
         title: Optional string for the plot title.
+        plot_minmax: bool, whether to plot min/max whiskers (default: True)
     """
-    # Get dataframes
-    df_co = co_features.get_summary_dataframe()
-    df_fl = fl_features.get_summary_dataframe()
+    # Extract features to DataFrames
+    df_co = extract_features_to_dataframe(co_features.get_individual_features())
+    df_fl = extract_features_to_dataframe(fl_features.get_individual_features())
     
-    features = df_co["feature"].tolist()
+    # Get numeric features (exclude individual_id)
+    numeric_cols = df_co.select_dtypes(include=[np.number]).columns
+    numeric_cols = [col for col in numeric_cols if col != 'individual_id']
     
-    fig, axes = plt.subplots(len(features), 1, figsize=(12, len(features)), sharex=False)
-    if len(features) == 1:
+    fig, axes = plt.subplots(len(numeric_cols), 1, figsize=(12, len(numeric_cols)), sharex=False)
+    if len(numeric_cols) == 1:
         axes = [axes]
     
     # Prepare comparison data
     comparison_data = []
-    for feat in features:
-        m1 = df_co.loc[df_co["feature"] == feat, "mean"].values[0]
-        s1 = df_co.loc[df_co["feature"] == feat, "std"].values[0]
-        m2 = df_fl.loc[df_fl["feature"] == feat, "mean"].values[0]
-        s2 = df_fl.loc[df_fl["feature"] == feat, "std"].values[0]
+    for feat in numeric_cols:
+        # Compute summary statistics for CO cohort
+        co_stats = df_co[feat].describe()
+        # Compute summary statistics for FL cohort
+        fl_stats = df_fl[feat].describe()
+        
         comparison_data.append({
             'feature': feat,
-            'co_mean': m1, 'co_std': s1,
-            'fl_mean': m2, 'fl_std': s2
+            'co_mean': co_stats.get('mean', 0),
+            'co_median': co_stats.get('50%', 0),
+            'co_q1': co_stats.get('25%', 0),
+            'co_q3': co_stats.get('75%', 0),
+            'co_min': co_stats.get('min', 0),
+            'co_max': co_stats.get('max', 0),
+            'fl_mean': fl_stats.get('mean', 0),
+            'fl_median': fl_stats.get('50%', 0),
+            'fl_q1': fl_stats.get('25%', 0),
+            'fl_q3': fl_stats.get('75%', 0),
+            'fl_min': fl_stats.get('min', 0),
+            'fl_max': fl_stats.get('max', 0)
         })
     
     # Plot each feature
     for i, data in enumerate(comparison_data):
         ax = axes[i]
-        ax.errorbar(data['fl_mean'], 0.25, xerr=data['fl_std'], fmt='s', color='red', 
-                    capsize=4, capthick=1.5, label='FL cohort' if i == 0 else "", markersize=5,
-                    ecolor='red', alpha=1, elinewidth=1)
-        ax.errorbar(data['co_mean'], 0.75, xerr=data['co_std'], fmt='o', color='blue', 
-                    capsize=4, capthick=1.5, label='CO cohort' if i == 0 else "", markersize=5,
-                    ecolor='blue', alpha=1, elinewidth=1)
+        
+        # Plot CO cohort
+        co_x_pos = 0.75
+        # Plot min/max whiskers if requested
+        if plot_minmax:
+            ax.plot([data['co_min'], data['co_max']], [co_x_pos, co_x_pos], color='blue', linewidth=2, alpha=0.7)
+        # Plot IQR box
+        ax.plot([data['co_q1'], data['co_q3']], [co_x_pos, co_x_pos], color='blue', linewidth=6, alpha=0.5)
+        # Plot mean as circle
+        ax.plot(data['co_mean'], co_x_pos, 'o', color='blue', markersize=8, label='CO cohort' if i == 0 else "")
+        # Plot median as square
+        ax.plot(data['co_median'], co_x_pos, 's', color='blue', markersize=6, alpha=0.8, label='CO cohort' if i == 0 else "")
+        
+        # Plot FL cohort
+        fl_x_pos = 0.25
+        # Plot min/max whiskers if requested
+        if plot_minmax:
+            ax.plot([data['fl_min'], data['fl_max']], [fl_x_pos, fl_x_pos], color='red', linewidth=2, alpha=0.7)
+        # Plot IQR box
+        ax.plot([data['fl_q1'], data['fl_q3']], [fl_x_pos, fl_x_pos], color='red', linewidth=6, alpha=0.5)
+        # Plot mean as circle
+        ax.plot(data['fl_mean'], fl_x_pos, 'o', color='red', markersize=8, label='FL cohort' if i == 0 else "")
+        # Plot median as square
+        ax.plot(data['fl_median'], fl_x_pos, 's', color='red', markersize=6, alpha=0.8, label='FL cohort' if i == 0 else "")
     
         # Set individual x-axis scale
-        all_vals = [data['co_mean']-data['co_std'], data['co_mean']+data['co_std'], 
-                    data['fl_mean']-data['fl_std'], data['fl_mean']+data['fl_std']]
+        all_vals = [data['co_min'], data['co_max'], data['fl_min'], data['fl_max']]
         margin = 0.1 * (max(all_vals) - min(all_vals))
         ax.set_xlim(min(all_vals) - margin, max(all_vals) + margin)
         
@@ -496,13 +581,174 @@ def plot_cohort_feature_comparison(co_features, fl_features, title=None):
     # Create custom legend handles in desired order
     from matplotlib.lines import Line2D
     custom_handles = [
-        Line2D([0], [0], marker='o', color='blue', markersize=5, linestyle='', label='CO cohort'),
-        Line2D([0], [0], marker='s', color='red', markersize=5, linestyle='', label='FL cohort')
+        Line2D([0], [0], marker='o', color='blue', markersize=8, linestyle='', label='CO cohort (mean)'),
+        Line2D([0], [0], marker='s', color='blue', markersize=6, linestyle='', label='CO cohort (median)'),
+        Line2D([0], [0], marker='o', color='red', markersize=8, linestyle='', label='FL cohort (mean)'),
+        Line2D([0], [0], marker='s', color='red', markersize=6, linestyle='', label='FL cohort (median)')
     ]
     
     # Legend above first subplot
     axes[0].legend(handles=custom_handles, loc='lower center', bbox_to_anchor=(0.5, 1.05), ncol=2)
     
-    plt.suptitle(title or 'Cohort Comparison: Mean ±1 std per Feature', fontsize=14)
+    title_suffix = " with Min/Max" if plot_minmax else ""
+    plt.suptitle(title or f'Cohort Comparison: Quartiles, Mean, and Median per Feature{title_suffix}', fontsize=14)
     plt.tight_layout(rect=[0.05,0,0.95,0.97])
+    plt.show()
+
+def extract_features_to_dataframe(individual_features):
+    """
+    Extract individual features from the nested structure and organize into a DataFrame.
+    
+    Parameters:
+        individual_features: List of dictionaries from get_individual_features()
+    
+    Returns:
+        pd.DataFrame: DataFrame with one row per individual and columns for each feature
+    """
+    rows = []
+    
+    for i, individual in enumerate(individual_features):
+        row = {'individual_id': i}
+        
+        # Extract cosinor features
+        if 'cosinor' in individual:
+            cosinor = individual['cosinor']
+            row.update({
+                'cosinor_mesor': cosinor.get('mesor', np.nan),
+                'cosinor_amplitude': cosinor.get('amplitude', np.nan),
+                'cosinor_acrophase': cosinor.get('acrophase', np.nan),
+                'cosinor_acrophase_time': cosinor.get('acrophase_time', np.nan)
+            })
+        
+        # Extract nonparametric features
+        if 'nonparam' in individual:
+            nonparam = individual['nonparam']
+            row.update({
+                'nonparam_IS': nonparam.get('IS', np.nan),
+                'nonparam_IV': nonparam.get('IV', np.nan),
+                'nonparam_M10_mean': np.mean(nonparam.get('M10', [np.nan])) if nonparam.get('M10') else np.nan,
+                'nonparam_L5_mean': np.mean(nonparam.get('L5', [np.nan])) if nonparam.get('L5') else np.nan,
+                'nonparam_RA_mean': np.mean(nonparam.get('RA', [np.nan])) if nonparam.get('RA') else np.nan
+            })
+        
+        # Extract physical activity features
+        if 'physical_activity' in individual:
+            pa = individual['physical_activity']
+            row.update({
+                'pa_sedentary_mean': np.mean(pa.get('sedentary', [np.nan])) if pa.get('sedentary') else np.nan,
+                'pa_light_mean': np.mean(pa.get('light', [np.nan])) if pa.get('light') else np.nan,
+                'pa_moderate_mean': np.mean(pa.get('moderate', [np.nan])) if pa.get('moderate') else np.nan,
+                'pa_vigorous_mean': np.mean(pa.get('vigorous', [np.nan])) if pa.get('vigorous') else np.nan
+            })
+        
+        # Extract sleep features
+        if 'sleep' in individual:
+            sleep = individual['sleep']
+            row.update({
+                'sleep_TST_mean': np.mean(sleep.get('TST', [np.nan])) if sleep.get('TST') else np.nan,
+                'sleep_WASO_mean': np.mean(sleep.get('WASO', [np.nan])) if sleep.get('WASO') else np.nan,
+                'sleep_PTA_mean': np.mean(sleep.get('PTA', [np.nan])) if sleep.get('PTA') else np.nan,
+                'sleep_NWB_mean': np.mean(sleep.get('NWB', [np.nan])) if sleep.get('NWB') else np.nan,
+                'sleep_SOL_mean': np.mean(sleep.get('SOL', [np.nan])) if sleep.get('SOL') else np.nan,
+                'sleep_SRI': sleep.get('SRI', np.nan)
+            })
+        
+        # Extract cosinorage features
+        if 'cosinorage' in individual:
+            cosinorage = individual['cosinorage']
+            row.update({
+                'cosinorage_value': cosinorage.get('cosinorage', np.nan),
+                'cosinorage_advance': cosinorage.get('cosinorage_advance', np.nan)
+            })
+        
+        rows.append(row)
+    
+    return pd.DataFrame(rows)
+
+def compute_feature_summary_stats(features_df):
+    """
+    Compute summary statistics (min, max, quartiles, mean, median) for all features.
+    
+    Parameters:
+        features_df: DataFrame from extract_features_to_dataframe()
+    
+    Returns:
+        pd.DataFrame: Summary statistics for each feature
+    """
+    # Exclude non-numeric columns
+    numeric_cols = features_df.select_dtypes(include=[np.number]).columns
+    numeric_cols = [col for col in numeric_cols if col != 'individual_id']
+    
+    summary_stats = []
+    
+    for col in numeric_cols:
+        stats = features_df[col].describe()
+        summary_stats.append({
+            'feature': col,
+            'count': stats['count'],
+            'mean': stats['mean'],
+            'std': stats['std'],
+            'min': stats['min'],
+            '25%': stats['25%'],
+            '50%': stats['50%'],
+            '75%': stats['75%'],
+            'max': stats['max']
+        })
+    
+    return pd.DataFrame(summary_stats)
+
+def plot_feature_distributions(features_df, features_to_plot=None, figsize=(15, 10)):
+    """
+    Plot distributions of features as histograms with summary statistics.
+    
+    Parameters:
+        features_df: DataFrame from extract_features_to_dataframe()
+        features_to_plot: List of feature names to plot (if None, plots all numeric features)
+        figsize: Tuple for figure size
+    """
+    # Exclude non-numeric columns
+    numeric_cols = features_df.select_dtypes(include=[np.number]).columns
+    numeric_cols = [col for col in numeric_cols if col != 'individual_id']
+    
+    if features_to_plot is None:
+        features_to_plot = numeric_cols
+    else:
+        features_to_plot = [f for f in features_to_plot if f in numeric_cols]
+    
+    n_features = len(features_to_plot)
+    n_cols = 3
+    n_rows = (n_features + n_cols - 1) // n_cols
+    
+    fig, axes = plt.subplots(n_rows, n_cols, figsize=figsize)
+    if n_rows == 1:
+        axes = axes.reshape(1, -1)
+    elif n_cols == 1:
+        axes = axes.reshape(-1, 1)
+    
+    for i, feature in enumerate(features_to_plot):
+        row = i // n_cols
+        col = i % n_cols
+        ax = axes[row, col]
+        
+        # Plot histogram
+        ax.hist(features_df[feature].dropna(), bins=20, alpha=0.7, color='skyblue', edgecolor='black')
+        
+        # Add summary statistics as text
+        stats = features_df[feature].describe()
+        stats_text = f'Mean: {stats["mean"]:.3f}\nMedian: {stats["50%"]:.3f}\nStd: {stats["std"]:.3f}'
+        ax.text(0.02, 0.98, stats_text, transform=ax.transAxes, verticalalignment='top',
+                bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
+        
+        ax.set_title(feature)
+        ax.set_xlabel('Value')
+        ax.set_ylabel('Frequency')
+        ax.grid(True, alpha=0.3)
+    
+    # Hide empty subplots
+    for i in range(n_features, n_rows * n_cols):
+        row = i // n_cols
+        col = i % n_cols
+        axes[row, col].set_visible(False)
+    
+    plt.tight_layout()
     plt.show()
