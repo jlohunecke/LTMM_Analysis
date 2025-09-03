@@ -360,13 +360,13 @@ def plot_pig_wear_timeseries(
     limit=None
 ):
     """
-    For each pig_id in the wear CSV, find the corresponding CSV file in input_dir and plot the x-axis timeseries.
+    For each pig_id in the wear CSV, find the corresponding CSV file in input_dir and plot the specified axis timeseries.
     Wear periods are highlighted in green, and valid wear hours are displayed in the title.
     
     Parameters:
         wear_csv (str): Path to CSV file containing 'pig_id' and wear_start_/wear_end_ columns
         input_dir (str): Directory containing timestamped x-axis data CSVs
-        axis (str): Which axis to plot ('x', 'y', or 'z')
+        axis (str): Which axis to plot ('x', 'y', 'z', or 'enmo')
         limit (int or None): Maximum number of pigs to plot
     """
     import pandas as pd
@@ -398,8 +398,19 @@ def plot_pig_wear_timeseries(
         ts = pd.to_datetime(df['timestamp'])
         file_label = os.path.basename(csv_file)
 
+        # Handle ENMO axis computation
+        if axis == 'enmo':
+            # Compute ENMO: sqrt(x² + y² + z²) - 1, clipped to non-negative values
+            enmo = np.sqrt(df['x']**2 + df['y']**2 + df['z']**2) - 1
+            enmo = enmo.clip(lower=0)
+            plot_data = enmo
+            axis_label = 'ENMO'
+        else:
+            plot_data = df[f'{axis}']
+            axis_label = f'{axis} axis'
+
         plt.figure(figsize=(12, 2))
-        plt.plot(ts, df[f'{axis}'], label=f"{file_label} {axis}")
+        plt.plot(ts, plot_data, label=f"{file_label} {axis_label}")
         plt.axvline(ts.min(), color='g', linestyle='--', label='Min timestamp')
         plt.axvline(ts.max(), color='r', linestyle='--', label='Max timestamp')
 
@@ -429,8 +440,8 @@ def plot_pig_wear_timeseries(
         total_hours = ((ts.max().floor('h') - ts.min().floor('h')).total_seconds() / 3600.0) if not ts.empty else 0.0
 
         plt.xlabel('Timestamp')
-        plt.ylabel(f'{axis} axis data')
-        plt.title(f'{axis} axis data for {file_label} (valid wear hours: {round(wear_hours)}/{round(total_hours)})')
+        plt.ylabel(f'{axis_label} data')
+        plt.title(f'{axis_label} data for {file_label} (valid wear hours: {round(wear_hours)}/{round(total_hours)})')
         plt.show()
 
 def smart_fill_non_wear(df, wear_mask, day_start="07:00", day_end="19:00"):
