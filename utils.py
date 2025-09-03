@@ -263,8 +263,10 @@ def save_modified_timeseries(
         df_valid = df.loc[valid_mask].copy()
         wear_mask_valid = wear_mask[valid_mask]
 
-        # Compute average during wear
-        wear_mean = df_valid.loc[wear_mask_valid, 'x'].mean() if wear_mask_valid.any() else df_valid['x'].mean()
+        # Compute average during wear for each axis
+        wear_mean_x = df_valid.loc[wear_mask_valid, 'x'].mean() if wear_mask_valid.any() else df_valid['x'].mean()
+        wear_mean_y = df_valid.loc[wear_mask_valid, 'y'].mean() if wear_mask_valid.any() else df_valid['y'].mean()
+        wear_mean_z = df_valid.loc[wear_mask_valid, 'z'].mean() if wear_mask_valid.any() else df_valid['z'].mean()
 
         # Determine day/night for each timestamp
         # Day: day_start <= time < day_end, else night
@@ -275,7 +277,7 @@ def save_modified_timeseries(
             else (t >= day_start_time or t < day_end_time)
         )
 
-        # Fill non-wear: day with mean, night with 0
+        # Fill non-wear: day with mean, night with 0 for all axes
         df_filled = df_valid.copy()
         non_wear_mask = ~wear_mask_valid
 
@@ -283,8 +285,17 @@ def save_modified_timeseries(
         non_wear_day_mask = non_wear_mask & is_day.values
         non_wear_night_mask = non_wear_mask & (~is_day.values)
 
-        df_filled.loc[non_wear_day_mask, 'x'] = wear_mean
+        # Apply modifications to x axis
+        df_filled.loc[non_wear_day_mask, 'x'] = wear_mean_x
         df_filled.loc[non_wear_night_mask, 'x'] = 0.0
+        
+        # Apply modifications to y axis
+        df_filled.loc[non_wear_day_mask, 'y'] = wear_mean_y
+        df_filled.loc[non_wear_night_mask, 'y'] = 0.0
+        
+        # Apply modifications to z axis
+        df_filled.loc[non_wear_day_mask, 'z'] = wear_mean_z
+        df_filled.loc[non_wear_night_mask, 'z'] = 0.0
 
         # Save to CSV
         cols_to_save = [c for c in ['timestamp', 'x', 'y', 'z'] if c in df_filled.columns]
@@ -568,10 +579,20 @@ def plot_cohort_feature_comparison(co_features, fl_features, title=None, plot_mi
         # Plot median as square
         ax.plot(data['fl_median'], fl_x_pos, 's', color='red', markersize=6, alpha=0.8, label='FL cohort' if i == 0 else "")
     
-        # Set individual x-axis scale
-        all_vals = [data['co_min'], data['co_max'], data['fl_min'], data['fl_max']]
-        margin = 0.1 * (max(all_vals) - min(all_vals))
-        ax.set_xlim(min(all_vals) - margin, max(all_vals) + margin)
+        # Special handling for cosinor_acrophase_time: set full 24-hour range and HH:MM format
+        if data['feature'] == 'cosinor_acrophase_time':
+            # Set x-axis to cover full 24-hour period (0 to 1440 minutes)
+            ax.set_xlim(0, 1440)
+            # Set custom x-axis ticks for every 4 hours (0, 4, 8, 12, 16, 20, 24)
+            x_ticks = [0, 240, 480, 720, 960, 1200, 1440]
+            x_tick_labels = ['00:00', '04:00', '08:00', '12:00', '16:00', '20:00', '24:00']
+            ax.set_xticks(x_ticks)
+            ax.set_xticklabels(x_tick_labels)
+        else:
+            # Set individual x-axis scale for other features
+            all_vals = [data['co_min'], data['co_max'], data['fl_min'], data['fl_max']]
+            margin = 0.1 * (max(all_vals) - min(all_vals))
+            ax.set_xlim(min(all_vals) - margin, max(all_vals) + margin)
         
         ax.set_ylim(0, 1)
         ax.set_yticks([])
