@@ -357,7 +357,8 @@ def plot_pig_wear_timeseries(
     wear_csv, 
     input_dir, 
     axis='x',
-    limit=None
+    limit=None,
+    file_names=None
 ):
     """
     For each pig_id in the wear CSV, find the corresponding CSV file in input_dir and plot the specified axis timeseries.
@@ -368,6 +369,7 @@ def plot_pig_wear_timeseries(
         input_dir (str): Directory containing timestamped x-axis data CSVs
         axis (str): Which axis to plot ('x', 'y', 'z', or 'enmo')
         limit (int or None): Maximum number of pigs to plot
+        file_names (list of str, optional): List of specific filenames to include (if None, processes all)
     """
     import pandas as pd
     import os
@@ -378,7 +380,16 @@ def plot_pig_wear_timeseries(
     wear_df = pd.read_csv(wear_csv)
     wear_df.columns = [c.strip() for c in wear_df.columns]
     wear_df = wear_df.map(lambda x: x.strip() if isinstance(x, str) else x)
-    csv_files = sorted(glob.glob(os.path.join(input_dir, "*.csv")))
+    
+    # Get list of available CSV files
+    all_csv_files = sorted(glob.glob(os.path.join(input_dir, "*.csv")))
+    
+    # Filter by file_names if provided
+    if file_names is not None:
+        csv_files = [f for f in all_csv_files if os.path.basename(f) in file_names]
+        print(f"Filtering to {len(csv_files)} files from {len(all_csv_files)} available files")
+    else:
+        csv_files = all_csv_files
 
     for idx, row in wear_df.iterrows():
         if limit is not None and idx >= limit:
@@ -679,7 +690,8 @@ def compare_cohorts_daily_signal(
     folder="minute_level_modified", 
     columns=None, 
     window=30,
-    plot_minmax=False
+    plot_minmax=False,
+    file_names=None
 ):
     """
     Load, process, and plot comparison of two cohorts using quartiles as 2D whisker plots.
@@ -691,6 +703,7 @@ def compare_cohorts_daily_signal(
         columns: list of str, columns to plot (default: ['x','y','z','enmo'])
         window: int, rolling window size for smoothing
         plot_minmax: bool, whether to plot min/max whiskers (default: False)
+        file_names: list of str, optional list of specific filenames to include (if None, uses patterns)
     """
     if columns is None:
         columns = ['x','y','z','enmo']
@@ -711,8 +724,16 @@ def compare_cohorts_daily_signal(
         data['enmo'] = data['enmo'].clip(lower=0)
         return data
 
-    co_files = glob.glob(f"{folder}/{co_pattern}")
-    fl_files = glob.glob(f"{folder}/{fl_pattern}")
+    if file_names is not None:
+        # Filter files by the provided file_names list
+        co_files = [f for f in glob.glob(f"{folder}/{co_pattern}") 
+                    if os.path.basename(f) in file_names]
+        fl_files = [f for f in glob.glob(f"{folder}/{fl_pattern}") 
+                    if os.path.basename(f) in file_names]
+    else:
+        # Use pattern-based file selection (original behavior)
+        co_files = glob.glob(f"{folder}/{co_pattern}")
+        fl_files = glob.glob(f"{folder}/{fl_pattern}")
 
     co_data = load_and_concat(co_files)
     fl_data = load_and_concat(fl_files)
@@ -810,7 +831,7 @@ def compare_cohorts_daily_signal(
         plt.xticks(ticks, tick_labels)
         plt.show()
 
-def load_cohort_data(modified_dir="minute_level_modified", header_dir="headers", pattern="CO*.csv", preprocess_args=None):
+def load_cohort_data(modified_dir="minute_level_modified", header_dir="headers", pattern="CO*.csv", preprocess_args=None, file_names=None):
     """
     Load accelerometer data handlers and age/gender info for a specific cohort.
     
@@ -819,6 +840,7 @@ def load_cohort_data(modified_dir="minute_level_modified", header_dir="headers",
         header_dir: str, folder with corresponding header (.hea) files
         pattern: str, filename pattern to select cohort files (e.g., 'CO*.csv' or 'FL*.csv')
         preprocess_args: dict, optional preprocessing arguments for the data handler
+        file_names: list of str, optional list of specific filenames to include (if None, uses pattern)
     
     Returns:
         data_handlers: list of GenericDataHandler objects
@@ -830,7 +852,16 @@ def load_cohort_data(modified_dir="minute_level_modified", header_dir="headers",
     data_handlers = []
     cosinor_age_inputs = []
 
-    for file_path in glob.glob(os.path.join(modified_dir, pattern)):
+    # Get list of files to process
+    if file_names is not None:
+        # Filter files by the provided file_names list
+        all_files = glob.glob(os.path.join(modified_dir, pattern))
+        files_to_process = [f for f in all_files if os.path.basename(f) in file_names]
+    else:
+        # Use pattern-based file selection (original behavior)
+        files_to_process = glob.glob(os.path.join(modified_dir, pattern))
+    
+    for file_path in files_to_process:
         try:
             fname = os.path.basename(file_path)
             header_path = os.path.join(header_dir, fname.replace('.csv', '.hea'))
@@ -1139,6 +1170,417 @@ def plot_feature_distributions(features_df, features_to_plot=None, figsize=(15, 
         row = i // n_cols
         col = i % n_cols
         axes[row, col].set_visible(False)
+    
+    plt.tight_layout()
+    plt.show()
+
+def filter_samples_by_wear_time_and_outliers(
+    wear_csv,
+    input_dir="minute_level",
+    min_wear_percentage=50.0,
+    outlier_method="iqr",
+    outlier_threshold=1.5,
+    output_file="filtered_samples.csv",
+    verbose=False
+):
+    """
+    Filter samples based on wear time percentage and remove outliers.
+    
+    This function:
+    1. Calculates wear time percentage for each sample
+    2. Filters out samples with wear time < min_wear_percentage
+    3. Removes outliers using specified method and threshold
+    4. Returns list of filenames that pass the filtering
+    
+    Parameters
+    ----------
+    wear_csv : str
+        Path to CSV file containing wear period information
+    input_dir : str
+        Directory containing the input CSV files
+    min_wear_percentage : float
+        Minimum percentage of wear time required (default: 50.0)
+    outlier_method : str
+        Method for outlier detection: 'iqr', 'zscore', or 'isolation_forest' (default: 'iqr')
+    outlier_threshold : float
+        Threshold for outlier detection (default: 1.5)
+        - For IQR: multiplier for IQR range
+        - For Z-score: number of standard deviations
+        - For isolation forest: contamination factor (0.0 to 0.5)
+    output_file : str
+        Output CSV file for filtered samples (default: 'filtered_samples.csv')
+    verbose : bool
+        Whether to print progress information (default: False)
+    
+    Returns
+    -------
+    list
+        List of filenames (without path) that pass the filtering criteria
+    """
+    import pandas as pd
+    import numpy as np
+    import os
+    import glob
+    import re
+    from sklearn.ensemble import IsolationForest
+    from sklearn.preprocessing import StandardScaler
+    
+    # Load wear periods data
+    wear_df = pd.read_csv(wear_csv)
+    wear_df.columns = [c.strip() for c in wear_df.columns]
+    wear_df = wear_df.map(lambda x: x.strip() if isinstance(x, str) else x)
+    
+    # Get list of available CSV files
+    csv_files = sorted(glob.glob(os.path.join(input_dir, "*.csv")))
+    
+    if verbose:
+        print(f"Processing {len(wear_df)} samples from wear periods file...")
+        print(f"Found {len(csv_files)} CSV files in {input_dir}")
+    
+    # Calculate wear time statistics for each sample
+    sample_stats = []
+    
+    for idx, row in wear_df.iterrows():
+        pig_id = row['pig_id']
+        
+        # Find matching CSV file
+        pig_id_pattern = pig_id.replace("-", "[-_]?")
+        pattern = re.compile(rf"{pig_id_pattern}\.csv$", re.IGNORECASE)
+        matching_files = [f for f in csv_files if pattern.search(os.path.basename(f))]
+        
+        if not matching_files:
+            if verbose:
+                print(f"  No CSV file found for {pig_id}")
+            continue
+            
+        csv_file = matching_files[0]
+        
+        try:
+            # Load accelerometer data
+            df = pd.read_csv(csv_file, parse_dates=['timestamp'])
+            df = df.set_index('timestamp')
+            
+            # Calculate total time span
+            total_duration = (df.index.max() - df.index.min()).total_seconds() / 3600.0  # hours
+            
+            # Calculate wear time from wear periods
+            wear_time_hours = 0.0
+            wear_periods = []
+            
+            # Check for wear period columns
+            max_wear_periods = (wear_df.shape[1] - 1) // 2
+            for i in range(1, max_wear_periods + 1):
+                start_col = f'wear_start_{i}'
+                end_col = f'wear_end_{i}'
+                
+                if start_col in row and end_col in row:
+                    start = row[start_col]
+                    end = row[end_col]
+                    
+                    if pd.notna(start) and pd.notna(end) and start != '' and end != '':
+                        try:
+                            start_dt = pd.to_datetime(start)
+                            end_dt = pd.to_datetime(end)
+                            
+                            # Ensure wear period is within data bounds
+                            start_dt = max(start_dt, df.index.min())
+                            end_dt = min(end_dt, df.index.max())
+                            
+                            if start_dt < end_dt:
+                                period_duration = (end_dt - start_dt).total_seconds() / 3600.0
+                                wear_time_hours += period_duration
+                                wear_periods.append((start_dt, end_dt))
+                        except:
+                            continue
+            
+            # Calculate wear percentage
+            wear_percentage = (wear_time_hours / total_duration * 100) if total_duration > 0 else 0.0
+            
+            # Calculate basic statistics for outlier detection
+            stats = {
+                'pig_id': pig_id,
+                'total_duration_hours': total_duration,
+                'wear_time_hours': wear_time_hours,
+                'wear_percentage': wear_percentage,
+                'n_wear_periods': len(wear_periods),
+                'mean_x': df['x'].mean(),
+                'mean_y': df['y'].mean(),
+                'mean_z': df['z'].mean(),
+                'std_x': df['x'].std(),
+                'std_y': df['y'].std(),
+                'std_z': df['z'].std(),
+                'range_x': df['x'].max() - df['x'].min(),
+                'range_y': df['y'].max() - df['y'].min(),
+                'range_z': df['z'].max() - df['z'].min()
+            }
+            
+            sample_stats.append(stats)
+            
+            if verbose:
+                print(f"  {pig_id}: {wear_percentage:.1f}% wear time ({wear_time_hours:.1f}h / {total_duration:.1f}h)")
+                
+        except Exception as e:
+            if verbose:
+                print(f"  Error processing {pig_id}: {str(e)}")
+            continue
+    
+    # Convert to DataFrame
+    stats_df = pd.DataFrame(sample_stats)
+    
+    if verbose:
+        print(f"\nInitial sample count: {len(stats_df)}")
+        print(f"Wear time statistics:")
+        print(f"  Mean: {stats_df['wear_percentage'].mean():.1f}%")
+        print(f"  Median: {stats_df['wear_percentage'].median():.1f}%")
+        print(f"  Min: {stats_df['wear_percentage'].min():.1f}%")
+        print(f"  Max: {stats_df['wear_percentage'].max():.1f}%")
+    
+    # Step 1: Filter by wear time percentage
+    wear_filtered = stats_df[stats_df['wear_percentage'] >= min_wear_percentage].copy()
+    
+    if verbose:
+        print(f"\nAfter wear time filtering (≥{min_wear_percentage}%): {len(wear_filtered)} samples")
+    
+    # Step 2: Remove outliers
+    if len(wear_filtered) > 0:
+        # Select features for outlier detection
+        outlier_features = ['wear_percentage', 'mean_x', 'mean_y', 'mean_z', 'std_x', 'std_y', 'std_z']
+        
+        # Remove samples with NaN values in outlier features
+        outlier_features_df = wear_filtered[outlier_features].dropna()
+        outlier_indices = outlier_features_df.index
+        
+        if len(outlier_indices) > 0:
+            if outlier_method == 'iqr':
+                # IQR method
+                outlier_mask = pd.Series(False, index=outlier_indices)
+                
+                for feature in outlier_features:
+                    Q1 = outlier_features_df[feature].quantile(0.25)
+                    Q3 = outlier_features_df[feature].quantile(0.75)
+                    IQR = Q3 - Q1
+                    lower_bound = Q1 - outlier_threshold * IQR
+                    upper_bound = Q3 + outlier_threshold * IQR
+                    
+                    feature_outliers = (outlier_features_df[feature] < lower_bound) | (outlier_features_df[feature] > upper_bound)
+                    outlier_mask = outlier_mask | feature_outliers
+                
+                non_outlier_indices = outlier_indices[~outlier_mask]
+                
+            elif outlier_method == 'zscore':
+                # Z-score method
+                scaler = StandardScaler()
+                scaled_features = scaler.fit_transform(outlier_features_df)
+                
+                outlier_mask = np.any(np.abs(scaled_features) > outlier_threshold, axis=1)
+                non_outlier_indices = outlier_indices[~outlier_mask]
+                
+            elif outlier_method == 'isolation_forest':
+                # Isolation Forest method
+                contamination = min(outlier_threshold, 0.5)  # Ensure contamination is valid
+                iso_forest = IsolationForest(contamination=contamination, random_state=42)
+                
+                outlier_labels = iso_forest.fit_predict(outlier_features_df)
+                non_outlier_indices = outlier_indices[outlier_labels == 1]
+                
+            else:
+                raise ValueError(f"Unknown outlier method: {outlier_method}")
+            
+            # Apply outlier filtering
+            final_filtered = wear_filtered.loc[non_outlier_indices].copy()
+            
+            if verbose:
+                print(f"After outlier removal ({outlier_method} method): {len(final_filtered)} samples")
+                print(f"Outliers removed: {len(wear_filtered) - len(final_filtered)}")
+        else:
+            final_filtered = wear_filtered.copy()
+            if verbose:
+                print("No valid data for outlier detection, keeping all wear-filtered samples")
+    else:
+        final_filtered = wear_filtered.copy()
+        if verbose:
+            print("No samples passed wear time filtering")
+    
+    # Create summary statistics
+    summary_stats = {
+        'initial_samples': len(stats_df),
+        'after_wear_filter': len(wear_filtered),
+        'after_outlier_filter': len(final_filtered),
+        'wear_threshold': min_wear_percentage,
+        'outlier_method': outlier_method,
+        'outlier_threshold': outlier_threshold,
+        'removed_samples': len(stats_df) - len(final_filtered)
+    }
+    
+    # Extract filenames from filtered samples
+    filtered_filenames = []
+    for pig_id in final_filtered['pig_id']:
+        # Find matching CSV file
+        pig_id_pattern = pig_id.replace("-", "[-_]?")
+        pattern = re.compile(rf"{pig_id_pattern}\.csv$", re.IGNORECASE)
+        matching_files = [f for f in csv_files if pattern.search(os.path.basename(f))]
+        
+        if matching_files:
+            filename = os.path.basename(matching_files[0])
+            filtered_filenames.append(filename)
+    
+    # Save filtered samples (optional)
+    if len(final_filtered) > 0:
+        final_filtered.to_csv(output_file, index=False)
+        if verbose:
+            print(f"\nFiltered samples saved to: {output_file}")
+    
+    if verbose:
+        print(f"\nFinal sample count: {len(filtered_filenames)}")
+        if len(filtered_filenames) > 0:
+            print(f"Final wear time statistics:")
+            print(f"  Mean: {final_filtered['wear_percentage'].mean():.1f}%")
+            print(f"  Median: {final_filtered['wear_percentage'].median():.1f}%")
+            print(f"  Min: {final_filtered['wear_percentage'].min():.1f}%")
+            print(f"  Max: {final_filtered['wear_percentage'].max():.1f}%")
+            print(f"Filtered filenames: {filtered_filenames}")
+    
+    return filtered_filenames
+
+def plot_cohort_demographics(co_cosinor_age_inputs, fl_cosinor_age_inputs, title=None, figsize=(15, 6)):
+    """
+    Plot age and gender distributions for two cohorts (CO and FL).
+    
+    This function creates:
+    1. Age distribution histograms for both cohorts
+    2. Gender distribution bar charts for both cohorts
+    
+    Parameters
+    ----------
+    co_cosinor_age_inputs : list
+        List of dictionaries with 'age' and 'gender' keys for CO cohort
+    fl_cosinor_age_inputs : list
+        List of dictionaries with 'age' and 'gender' keys for FL cohort
+    title : str, optional
+        Optional title for the overall plot
+    figsize : tuple, optional
+        Figure size (width, height) in inches (default: (15, 6))
+    
+    Returns
+    -------
+    None
+        Displays the plots
+    """
+    import pandas as pd
+    import numpy as np
+    import matplotlib.pyplot as plt
+    
+    # Convert inputs to DataFrames for easier processing
+    co_df = pd.DataFrame(co_cosinor_age_inputs)
+    fl_df = pd.DataFrame(fl_cosinor_age_inputs)
+    
+    # Create figure with subplots (vertical layout)
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(figsize[0], figsize[1]*1.5))
+    
+    # Plot 1: Age Distribution using horizontal range format (same as features)
+    # Calculate summary statistics for age
+    co_age_stats = co_df['age'].describe()
+    fl_age_stats = fl_df['age'].describe()
+    
+    # CO cohort age data
+    co_age_mean = co_age_stats.get('mean', 0)
+    co_age_median = co_age_stats.get('50%', 0)
+    co_age_q1 = co_age_stats.get('25%', 0)
+    co_age_q3 = co_age_stats.get('75%', 0)
+    co_age_min = co_age_stats.get('min', 0)
+    co_age_max = co_age_stats.get('max', 0)
+    
+    # FL cohort age data
+    fl_age_mean = fl_age_stats.get('mean', 0)
+    fl_age_median = fl_age_stats.get('50%', 0)
+    fl_age_q1 = fl_age_stats.get('25%', 0)
+    fl_age_q3 = fl_age_stats.get('75%', 0)
+    fl_age_min = fl_age_stats.get('min', 0)
+    fl_age_max = fl_age_stats.get('max', 0)
+    
+    # Plot CO cohort (top line)
+    co_x_pos = 0.75
+    # Plot min/max whiskers
+    ax1.plot([co_age_min, co_age_max], [co_x_pos, co_x_pos], color='blue', linewidth=2, alpha=0.7)
+    # Plot IQR box
+    ax1.plot([co_age_q1, co_age_q3], [co_x_pos, co_x_pos], color='blue', linewidth=6, alpha=0.5)
+    # Plot mean as circle
+    ax1.plot(co_age_mean, co_x_pos, 'o', color='blue', markersize=8, label='CO cohort (mean)')
+    # Plot median as square
+    ax1.plot(co_age_median, co_x_pos, 's', color='blue', markersize=6, alpha=0.8, label='CO cohort (median)')
+    
+    # Plot FL cohort (bottom line)
+    fl_x_pos = 0.25
+    # Plot min/max whiskers
+    ax1.plot([fl_age_min, fl_age_max], [fl_x_pos, fl_x_pos], color='red', linewidth=2, alpha=0.7)
+    # Plot IQR box
+    ax1.plot([fl_age_q1, fl_age_q3], [fl_x_pos, fl_x_pos], color='red', linewidth=6, alpha=0.5)
+    # Plot mean as circle
+    ax1.plot(fl_age_mean, fl_x_pos, 'o', color='red', markersize=8, label='FL cohort (mean)')
+    # Plot median as square
+    ax1.plot(fl_age_median, fl_x_pos, 's', color='red', markersize=6, alpha=0.8, label='FL cohort (median)')
+    
+    # Set y-axis properties
+    ax1.set_ylim(0, 1)
+    ax1.set_yticks([])
+    ax1.set_ylabel('Age (years)', rotation=0, labelpad=80, fontsize=9, va='center')
+    
+    # Set x-axis properties
+    all_vals = [co_age_min, co_age_max, fl_age_min, fl_age_max]
+    margin = 0.1 * (max(all_vals) - min(all_vals))
+    ax1.set_xlim(min(all_vals) - margin, max(all_vals) + margin)
+    ax1.set_xlabel('Age (years)')
+    ax1.set_title('Age Distribution by Cohort')
+    ax1.grid(True, alpha=0.3, axis='x')
+    
+    # Add legend for age plot
+    ax1.legend(loc='upper center', bbox_to_anchor=(0.5, 1.05), ncol=2)
+    
+    # Plot 2: Gender Distribution
+    # Count genders for each cohort
+    co_gender_counts = co_df['gender'].value_counts()
+    fl_gender_counts = fl_df['gender'].value_counts()
+    
+    # Get all unique genders
+    all_genders = sorted(set(co_df['gender'].dropna()) | set(fl_df['gender'].dropna()))
+    
+    # Prepare data for plotting
+    x = np.arange(len(all_genders))
+    width = 0.35
+    
+    co_counts = [co_gender_counts.get(gender, 0) for gender in all_genders]
+    fl_counts = [fl_gender_counts.get(gender, 0) for gender in all_genders]
+    
+    # Create bars
+    bars1 = ax2.bar(x - width/2, co_counts, width, label='CO cohort', color='blue', alpha=0.7)
+    bars2 = ax2.bar(x + width/2, fl_counts, width, label='FL cohort', color='red', alpha=0.7)
+    
+    # Add value labels on bars
+    def add_value_labels(bars):
+        for bar in bars:
+            height = bar.get_height()
+            ax2.text(bar.get_x() + bar.get_width()/2., height + 0.1,
+                    f'{int(height)}', ha='center', va='bottom', fontsize=10)
+    
+    add_value_labels(bars1)
+    add_value_labels(bars2)
+    
+    ax2.set_xlabel('Gender')
+    ax2.set_ylabel('Count')
+    ax2.set_title('Gender Distribution by Cohort')
+    ax2.set_xticks(x)
+    ax2.set_xticklabels(all_genders)
+    ax2.legend()
+    ax2.grid(True, alpha=0.3, axis='y')
+    
+    # Add total counts as text
+    total_text = f'Total CO: {len(co_df)}\nTotal FL: {len(fl_df)}'
+    ax2.text(0.02, 0.98, total_text, transform=ax2.transAxes, verticalalignment='top',
+             bbox=dict(boxstyle='round', facecolor='white', alpha=0.8), fontsize=9)
+    
+    # Set overall title if provided
+    if title:
+        fig.suptitle(title, fontsize=16, y=1.02)
     
     plt.tight_layout()
     plt.show()
