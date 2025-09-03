@@ -9,10 +9,263 @@ import cosinorage as csa
 def recompute_wear_periods(
     input_dir="minute_level",
     output_file="wear_periods_recomputed.csv",
+    sd_crit=0.02,
+    range_crit=0.05,
+    window_length=5,
+    window_skip=30,
+    min_duration_minutes_wear=15,
+    verbose=False
+):
+    """
+    Recompute wear periods using the AccelThresholdWearDetection algorithm.
+    
+    This function uses a more sophisticated wear detection algorithm based on
+    standard deviation and range thresholds within sliding windows, as described
+    in the CosinorAge methodology.
+    
+    Parameters
+    ----------
+    input_dir : str
+        Directory containing the input CSV files
+    output_file : str
+        Output CSV file for wear periods
+    sd_crit : float
+        Standard deviation criterion for wear detection (default: 0.02 = 20 mg)
+        Lower values = stricter detection, higher values = more lenient
+    range_crit : float
+        Range criterion for wear detection (default: 0.05 = 50 mg)
+        Lower values = stricter detection, higher values = more lenient
+    window_length : int
+        Length of the sliding window in seconds (default: 5)
+        For minute-level data, this represents the number of minutes in each rolling window
+        Should be at least 3-5 for meaningful standard deviation calculations
+    window_skip : int
+        Number of seconds to skip between consecutive windows (default: 30)
+        Controls temporal resolution of detection
+    min_duration_minutes_wear : int
+        Minimum duration in minutes for a wear period to be considered valid (default: 15)
+        Prevents detection of very brief wear periods
+    verbose : bool
+        Whether to print progress information (default: False)
+    """
+    # No external dependencies needed for the custom algorithm
+    
+    def detect_wear_periods_advanced(df, sf=1.0/60, sd_crit=0.005, range_crit=0.02, 
+                                   window_length=60, window_skip=30):
+        """
+        Detect wear periods using a custom algorithm optimized for minute-level data.
+        
+        This algorithm is specifically designed for low-frequency accelerometer data
+        and uses rolling statistics with appropriate window sizes.
+        
+        Parameters
+        ----------
+        df : pd.DataFrame
+            DataFrame with timestamp index and ['x', 'y', 'z'] columns
+        sf : float
+            Sampling frequency in Hz (default: 1/60 for minute-level data)
+        sd_crit : float
+            Standard deviation criterion for wear detection (in g units)
+        range_crit : float
+            Range criterion for wear detection (in g units)
+        window_length : int
+            Length of rolling window in samples (not seconds for minute-level data)
+        window_skip : int
+            Not used for minute-level data, kept for compatibility
+            
+        Returns
+        -------
+        list of tuples
+            List of (start_time, end_time) wear periods
+        """
+        import numpy as np
+        
+        # For minute-level data, we need to use sample-based windows, not time-based
+        # Convert window_length from seconds to samples, but ensure minimum meaningful size
+        window_samples = max(3, int(window_length * sf))  # At least 3 samples for meaningful std
+        
+        # Calculate rolling statistics for each axis
+        rolling_std_x = df['x'].rolling(window=window_samples, center=True, min_periods=1).std()
+        rolling_std_y = df['y'].rolling(window=window_samples, center=True, min_periods=1).std()
+        rolling_std_z = df['z'].rolling(window=window_samples, center=True, min_periods=1).std()
+        
+        # Calculate rolling range for each axis
+        rolling_range_x = df['x'].rolling(window=window_samples, center=True, min_periods=1).max() - \
+                         df['x'].rolling(window=window_samples, center=True, min_periods=1).min()
+        rolling_range_y = df['y'].rolling(window=window_samples, center=True, min_periods=1).max() - \
+                         df['y'].rolling(window=window_samples, center=True, min_periods=1).min()
+        rolling_range_z = df['z'].rolling(window=window_samples, center=True, min_periods=1).max() - \
+                         df['z'].rolling(window=window_samples, center=True, min_periods=1).min()
+        
+        # Combined wear mask: wear if ANY axis meets criteria
+        wear_mask = (
+            (rolling_std_x >= sd_crit) | 
+            (rolling_std_y >= sd_crit) | 
+            (rolling_std_z >= sd_crit) |
+            (rolling_range_x >= range_crit) | 
+            (rolling_range_y >= range_crit) | 
+            (rolling_range_z >= range_crit)
+        )
+        
+        # Find continuous wear periods
+        wear_periods = []
+        start_idx = None
+        
+        for i, is_wear in enumerate(wear_mask):
+            if is_wear and start_idx is None:
+                start_idx = i
+            elif not is_wear and start_idx is not None:
+                if i - start_idx >= 1:  # At least 1 sample
+                    start_time = df.index[start_idx]
+                    end_time = df.index[i-1]
+                    wear_periods.append((start_time, end_time))
+                start_idx = None
+        
+        # Handle case where wear period extends to the end
+        if start_idx is not None and start_idx < len(df) - 1:
+            start_time = df.index[start_idx]
+            end_time = df.index[-1]
+            wear_periods.append((start_time, end_time))
+        
+        return wear_periods
+    
+    def merge_intervals(intervals):
+        """Merge overlapping intervals."""
+        if not intervals:
+            return []
+        intervals = sorted(intervals)
+        merged = [list(intervals[0])]
+        for s, e in intervals[1:]:
+            if s <= merged[-1][1]:
+                merged[-1][1] = max(merged[-1][1], e)
+            else:
+                merged.append([s, e])
+        return [(s, e) for s, e in merged]
+    
+    def filter_wear_periods(wear_periods, min_duration_minutes):
+        """Filter wear periods by minimum duration."""
+        min_duration_seconds = min_duration_minutes * 60
+        return [
+            (s, e) for s, e in wear_periods
+            if (e - s).total_seconds() >= min_duration_seconds
+        ]
+    
+    # === Build new wear_periods dataframe ===
+    rows = []
+    csv_files = sorted(glob.glob(os.path.join(input_dir, "*.csv")))
+    
+    if verbose:
+        print(f"Processing {len(csv_files)} files...")
+    
+    for i, file_path in enumerate(csv_files):
+        if verbose:
+            print(f"Processing file {i+1}/{len(csv_files)}: {os.path.basename(file_path)}")
+        
+        pig_id = os.path.basename(file_path).split(".")[0]
+        pig_id = pig_id.replace("_", "-")
+        if pig_id.startswith("CO") and not pig_id.startswith("CO-"):
+            pig_id = pig_id[:2] + "-" + pig_id[2:]  # normalize CO001 -> CO-001
+
+        try:
+            df = pd.read_csv(file_path, parse_dates=['timestamp'])
+            df = df.set_index('timestamp')
+            
+            # Skip files with insufficient data
+            if len(df) < window_length * 2:  # Need at least 2 windows worth of data
+                if verbose:
+                    print(f"  Skipping {pig_id}: insufficient data ({len(df)} samples)")
+                continue
+            
+            # Detect wear periods using advanced algorithm
+            wear_periods = detect_wear_periods_advanced(
+                df, 
+                sf=1.0/60,  # 1 sample per minute
+                sd_crit=sd_crit,
+                range_crit=range_crit,
+                window_length=window_length,
+                window_skip=window_skip
+            )
+            
+            if verbose:
+                print(f"  {pig_id}: raw detection found {len(wear_periods)} periods")
+                if len(wear_periods) > 0:
+                    print(f"    Sample periods: {wear_periods[:2]}")
+                else:
+                    # Show some statistics to help debug
+                    sample_std_x = df['x'].rolling(window=min(5, len(df)), center=True, min_periods=1).std().mean()
+                    sample_std_y = df['y'].rolling(window=min(5, len(df)), center=True, min_periods=1).std().mean()
+                    sample_std_z = df['z'].rolling(window=min(5, len(df)), center=True, min_periods=1).std().mean()
+                    sample_range_x = (df['x'].rolling(window=min(5, len(df)), center=True, min_periods=1).max() - 
+                                    df['x'].rolling(window=min(5, len(df)), center=True, min_periods=1).min()).mean()
+                    sample_range_y = (df['y'].rolling(window=min(5, len(df)), center=True, min_periods=1).max() - 
+                                    df['y'].rolling(window=min(5, len(df)), center=True, min_periods=1).min()).mean()
+                    sample_range_z = (df['z'].rolling(window=min(5, len(df)), center=True, min_periods=1).max() - 
+                                    df['z'].rolling(window=min(5, len(df)), center=True, min_periods=1).min()).mean()
+                    print(f"    Sample stats - Std: x={sample_std_x:.4f}, y={sample_std_y:.4f}, z={sample_std_z:.4f}")
+                    print(f"    Sample stats - Range: x={sample_range_x:.4f}, y={sample_range_y:.4f}, z={sample_range_z:.4f}")
+                    print(f"    Thresholds - Std: {sd_crit:.4f}, Range: {range_crit:.4f}")
+                    
+                    # Show what the actual rolling window calculation is doing
+                    window_samples = max(1, int(window_length * (1.0/60)))
+                    print(f"    Rolling window size: {window_samples} samples")
+                    
+                    # Check a few specific rolling calculations
+                    if len(df) >= 3:
+                        test_std_x = df['x'].rolling(window=window_samples, center=True, min_periods=1).std().iloc[:5]
+                        test_std_y = df['y'].rolling(window=window_samples, center=True, min_periods=1).std().iloc[:5]
+                        test_std_z = df['z'].rolling(window=window_samples, center=True, min_periods=1).std().iloc[:5]
+                        print(f"    First 5 rolling std values - x: {[f'{x:.4f}' for x in test_std_x]}")
+                        print(f"    First 5 rolling std values - y: {[f'{y:.4f}' for y in test_std_y]}")
+                        print(f"    First 5 rolling std values - z: {[f'{z:.4f}' for z in test_std_z]}")
+                        
+                        # Check how many values actually meet the criteria
+                        rolling_std_x = df['x'].rolling(window=window_samples, center=True, min_periods=1).std()
+                        rolling_std_y = df['y'].rolling(window=window_samples, center=True, min_periods=1).std()
+                        rolling_std_z = df['z'].rolling(window=window_samples, center=True, min_periods=1).std()
+                        
+                        std_criteria_met = (rolling_std_x >= sd_crit) | (rolling_std_y >= sd_crit) | (rolling_std_z >= sd_crit)
+                        print(f"    Samples meeting std criteria: {std_criteria_met.sum()}/{len(df)} ({std_criteria_met.sum()/len(df)*100:.1f}%)")
+            
+            # Merge overlapping periods and filter by minimum duration
+            wear_periods = merge_intervals(wear_periods)
+            wear_periods = filter_wear_periods(wear_periods, min_duration_minutes_wear)
+            
+            if verbose:
+                print(f"  {pig_id}: after filtering: {len(wear_periods)} wear periods")
+            
+            # Create row for this pig
+            row = {"pig_id": pig_id}
+            for j, (s, e) in enumerate(wear_periods, start=1):
+                row[f"wear_start_{j}"] = s
+                row[f"wear_end_{j}"] = e
+            rows.append(row)
+            
+        except Exception as e:
+            if verbose:
+                print(f"  Error processing {pig_id}: {str(e)}")
+            continue
+    
+    # Create and save the new wear periods dataframe
+    new_wear_df = pd.DataFrame(rows)
+    new_wear_df.to_csv(output_file, index=False)
+    
+    if verbose:
+        print(f"Wear periods saved to {output_file}")
+        print(f"Total pigs processed: {len(new_wear_df)}")
+    
+    return new_wear_df
+
+def recompute_wear_periods_simple(
+    input_dir="minute_level",
+    output_file="wear_periods_recomputed.csv",
     threshold=0.005,
     min_duration_minutes_nonwear=30,
     min_duration_minutes_wear=30
 ):
+    """
+    Simple wear period detection using rolling standard deviation threshold.
+    This is a fallback method when the advanced algorithm is not available.
+    """
     def detect_non_wear_mask_periods(df, threshold=0.01, min_duration_minutes_nonwear=30):
         """Detect non-wear periods based on low rolling std of norm(x, y, z) signal."""
         # Compute the norm over x, y, z axes
@@ -180,13 +433,108 @@ def plot_pig_wear_timeseries(
         plt.title(f'{axis} axis data for {file_label} (valid wear hours: {round(wear_hours)}/{round(total_hours)})')
         plt.show()
 
+def smart_fill_non_wear(df, wear_mask, day_start="07:00", day_end="19:00"):
+    """
+    Smart filling strategy with multiple fallback methods:
+    1. Same time on other days
+    2. Same time ±30 minutes on other days  
+    3. Rolling mean from nearby wear periods
+    4. Time-aware filling (day vs night)
+    """
+    import datetime
+    
+    df_filled = df.copy()
+    non_wear_mask = ~wear_mask
+    
+    # Add time components
+    ts = pd.to_datetime(df_filled['timestamp'])
+    df_filled['hour'] = ts.dt.hour
+    df_filled['minute'] = ts.dt.minute
+    df_filled['day_of_week'] = ts.dt.dayofweek
+    
+    # Parse day boundaries
+    day_start_time = datetime.datetime.strptime(day_start, "%H:%M").time()
+    day_end_time = datetime.datetime.strptime(day_end, "%H:%M").time()
+    
+    for idx in df_filled.index[non_wear_mask]:
+        current_time = df_filled.loc[idx]
+        hour, minute = current_time['hour'], current_time['minute']
+        day_of_week = current_time['day_of_week']
+        
+        # Strategy 1: Exact same time on other days
+        same_time_mask = (
+            (df_filled['hour'] == hour) & 
+            (df_filled['minute'] == minute) & 
+            (df_filled['day_of_week'] != day_of_week) &  # Different day
+            wear_mask
+        )
+        
+        if same_time_mask.sum() >= 2:  # Need at least 2 samples
+            for col in ['x', 'y', 'z']:
+                df_filled.loc[idx, col] = df_filled.loc[same_time_mask, col].mean()
+            continue
+            
+        # Strategy 2: Same time ±30 minutes on other days
+        time_diff = abs(df_filled['hour'] - hour) + abs(df_filled['minute'] - minute) / 60
+        nearby_time_mask = (
+            (time_diff <= 0.5) & 
+            (df_filled['day_of_week'] != day_of_week) &
+            wear_mask
+        )
+        
+        if nearby_time_mask.sum() >= 3:
+            for col in ['x', 'y', 'z']:
+                df_filled.loc[idx, col] = df_filled.loc[nearby_time_mask, col].mean()
+            continue
+            
+        # Strategy 3: Rolling mean from nearby wear periods (within 2 hours)
+        time_diff = abs(df_filled['hour'] - hour) + abs(df_filled['minute'] - minute) / 60
+        nearby_wear_mask = (time_diff <= 2) & wear_mask
+        
+        if nearby_wear_mask.sum() >= 5:
+            for col in ['x', 'y', 'z']:
+                df_filled.loc[idx, col] = df_filled.loc[nearby_wear_mask, col].mean()
+            continue
+            
+        # Strategy 4: Time-aware filling (day vs night)
+        current_time_obj = ts.loc[idx].time()
+        is_day = (day_start_time <= current_time_obj < day_end_time)
+        
+        if is_day:
+            # Day: use mean of all daytime wear periods
+            day_mask = wear_mask & (
+                ts.dt.time.apply(lambda t: day_start_time <= t < day_end_time)
+            )
+            if day_mask.any():
+                for col in ['x', 'y', 'z']:
+                    df_filled.loc[idx, col] = df_filled.loc[day_mask, col].mean()
+            else:
+                # Fallback to overall wear mean
+                for col in ['x', 'y', 'z']:
+                    df_filled.loc[idx, col] = df_filled.loc[wear_mask, col].mean()
+        else:
+            # Night: use mean of all nighttime wear periods
+            night_mask = wear_mask & (
+                ts.dt.time.apply(lambda t: not (day_start_time <= t < day_end_time))
+            )
+            if night_mask.any():
+                for col in ['x', 'y', 'z']:
+                    df_filled.loc[idx, col] = df_filled.loc[night_mask, col].mean()
+            else:
+                # Fallback to overall wear mean
+                for col in ['x', 'y', 'z']:
+                    df_filled.loc[idx, col] = df_filled.loc[wear_mask, col].mean()
+    
+    return df_filled
+
 def save_modified_timeseries(
     wear_csv, 
     input_dir, 
     output_dir="minute_level_modified", 
     max_wear_periods=1000,
     day_start="07:00",
-    day_end="19:00"
+    day_end="19:00",
+    smart=False
 ):
     """
     For each pig_id in wear_df, locate the matching timeseries CSV,
@@ -196,10 +544,10 @@ def save_modified_timeseries(
 
     Parameters
     ----------
-    wear_df : pd.DataFrame
-        DataFrame with pig_id and wear_start_/wear_end_ columns
-    csv_files : list
-        List of candidate CSV files containing timestamped x,y,z data
+    wear_csv : str
+        Path to CSV file with pig_id and wear_start_/wear_end_ columns
+    input_dir : str
+        Directory containing the input CSV files
     output_dir : str
         Directory where modified CSVs will be saved
     max_wear_periods : int
@@ -208,6 +556,9 @@ def save_modified_timeseries(
         Start of day period in "HH:MM" (inclusive)
     day_end : str
         End of day period in "HH:MM" (exclusive)
+    smart : bool
+        If True, use smart filling strategy (same time on other days, etc.)
+        If False, use simple day/night filling (original behavior)
     """
     import datetime
 
@@ -277,25 +628,34 @@ def save_modified_timeseries(
             else (t >= day_start_time or t < day_end_time)
         )
 
-        # Fill non-wear: day with mean, night with 0 for all axes
+        # Fill non-wear periods using either smart or simple strategy
         df_filled = df_valid.copy()
         non_wear_mask = ~wear_mask_valid
 
-        # Set up boolean masks for non-wear during day and night
-        non_wear_day_mask = non_wear_mask & is_day.values
-        non_wear_night_mask = non_wear_mask & (~is_day.values)
+        if smart and non_wear_mask.any():
+            # Use smart filling strategy
+            #print(f"Using smart filling for {pig_id} ({non_wear_mask.sum()} non-wear periods)")
+            df_filled = smart_fill_non_wear(df_filled, wear_mask_valid, day_start, day_end)
+        else:
+            # Use simple day/night filling (original behavior)
+            #if non_wear_mask.any():
+                #print(f"Using simple filling for {pig_id} ({non_wear_mask.sum()} non-wear periods)")
+            
+            # Set up boolean masks for non-wear during day and night
+            non_wear_day_mask = non_wear_mask & is_day.values
+            non_wear_night_mask = non_wear_mask & (~is_day.values)
 
-        # Apply modifications to x axis
-        df_filled.loc[non_wear_day_mask, 'x'] = wear_mean_x
-        df_filled.loc[non_wear_night_mask, 'x'] = 0.0
-        
-        # Apply modifications to y axis
-        df_filled.loc[non_wear_day_mask, 'y'] = wear_mean_y
-        df_filled.loc[non_wear_night_mask, 'y'] = 0.0
-        
-        # Apply modifications to z axis
-        df_filled.loc[non_wear_day_mask, 'z'] = wear_mean_z
-        df_filled.loc[non_wear_night_mask, 'z'] = 0.0
+            # Apply modifications to x axis
+            df_filled.loc[non_wear_day_mask, 'x'] = wear_mean_x
+            df_filled.loc[non_wear_night_mask, 'x'] = 0.0
+            
+            # Apply modifications to y axis
+            df_filled.loc[non_wear_day_mask, 'y'] = wear_mean_y
+            df_filled.loc[non_wear_night_mask, 'y'] = 0.0
+            
+            # Apply modifications to z axis
+            df_filled.loc[non_wear_day_mask, 'z'] = wear_mean_z
+            df_filled.loc[non_wear_night_mask, 'z'] = 0.0
 
         # Save to CSV
         cols_to_save = [c for c in ['timestamp', 'x', 'y', 'z'] if c in df_filled.columns]
@@ -502,8 +862,6 @@ def load_cohort_data(modified_dir="minute_level_modified", header_dir="headers",
             print(f"Error processing {fname}: {e}")
 
     return data_handlers, cosinor_age_inputs
-
-import matplotlib.pyplot as plt
 
 def plot_cohort_feature_comparison(co_features, fl_features, title=None, plot_minmax=True):
     """
