@@ -437,3 +437,72 @@ def load_cohort_data(modified_dir="minute_level_modified", header_dir="headers",
             print(f"Error processing {fname}: {e}")
 
     return data_handlers, cosinor_age_inputs
+
+import matplotlib.pyplot as plt
+
+def plot_cohort_feature_comparison(co_features, fl_features, title=None):
+    """
+    Plots a horizontal bar chart comparing two cohorts for a set of features.
+    
+    Args:
+        co_features: Object with method `get_summary_dataframe()` returning a dataframe with columns ['feature', 'mean', 'std'] for CO cohort.
+        fl_features: Object with method `get_summary_dataframe()` returning a dataframe with columns ['feature', 'mean', 'std'] for FL cohort.
+        title: Optional string for the plot title.
+    """
+    # Get dataframes
+    df_co = co_features.get_summary_dataframe()
+    df_fl = fl_features.get_summary_dataframe()
+    
+    features = df_co["feature"].tolist()
+    
+    fig, axes = plt.subplots(len(features), 1, figsize=(12, len(features)), sharex=False)
+    if len(features) == 1:
+        axes = [axes]
+    
+    # Prepare comparison data
+    comparison_data = []
+    for feat in features:
+        m1 = df_co.loc[df_co["feature"] == feat, "mean"].values[0]
+        s1 = df_co.loc[df_co["feature"] == feat, "std"].values[0]
+        m2 = df_fl.loc[df_fl["feature"] == feat, "mean"].values[0]
+        s2 = df_fl.loc[df_fl["feature"] == feat, "std"].values[0]
+        comparison_data.append({
+            'feature': feat,
+            'co_mean': m1, 'co_std': s1,
+            'fl_mean': m2, 'fl_std': s2
+        })
+    
+    # Plot each feature
+    for i, data in enumerate(comparison_data):
+        ax = axes[i]
+        ax.errorbar(data['fl_mean'], 0.25, xerr=data['fl_std'], fmt='s', color='red', 
+                    capsize=4, capthick=1.5, label='FL cohort' if i == 0 else "", markersize=5,
+                    ecolor='red', alpha=1, elinewidth=1)
+        ax.errorbar(data['co_mean'], 0.75, xerr=data['co_std'], fmt='o', color='blue', 
+                    capsize=4, capthick=1.5, label='CO cohort' if i == 0 else "", markersize=5,
+                    ecolor='blue', alpha=1, elinewidth=1)
+    
+        # Set individual x-axis scale
+        all_vals = [data['co_mean']-data['co_std'], data['co_mean']+data['co_std'], 
+                    data['fl_mean']-data['fl_std'], data['fl_mean']+data['fl_std']]
+        margin = 0.1 * (max(all_vals) - min(all_vals))
+        ax.set_xlim(min(all_vals) - margin, max(all_vals) + margin)
+        
+        ax.set_ylim(0, 1)
+        ax.set_yticks([])
+        ax.set_ylabel(data['feature'], rotation=0, labelpad=80, fontsize=9, va='center')
+        ax.grid(True, alpha=0.3, axis='x')
+    
+    # Create custom legend handles in desired order
+    from matplotlib.lines import Line2D
+    custom_handles = [
+        Line2D([0], [0], marker='o', color='blue', markersize=5, linestyle='', label='CO cohort'),
+        Line2D([0], [0], marker='s', color='red', markersize=5, linestyle='', label='FL cohort')
+    ]
+    
+    # Legend above first subplot
+    axes[0].legend(handles=custom_handles, loc='lower center', bbox_to_anchor=(0.5, 1.05), ncol=2)
+    
+    plt.suptitle(title or 'Cohort Comparison: Mean ±1 std per Feature', fontsize=14)
+    plt.tight_layout(rect=[0.05,0,0.95,0.97])
+    plt.show()
