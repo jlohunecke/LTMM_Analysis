@@ -5,6 +5,7 @@ import re
 import matplotlib.pyplot as plt
 import numpy as np
 import cosinorage as csa
+import random
 
 def recompute_wear_periods(
     input_dir="minute_level",
@@ -1584,3 +1585,157 @@ def plot_cohort_demographics(co_cosinor_age_inputs, fl_cosinor_age_inputs, title
     
     plt.tight_layout()
     plt.show()
+
+def sample_cohort_files(
+    co_pattern="CO*.csv", 
+    fl_pattern="FL*.csv", 
+    folder="minute_level_modified", 
+    n_samples=10,
+    random_seed=None,
+    verbose=False
+):
+    """
+    Randomly sample n files from each cohort pattern.
+    
+    Parameters
+    ----------
+    co_pattern : str
+        Filename pattern for CO cohort (default: "CO*.csv")
+    fl_pattern : str
+        Filename pattern for FL cohort (default: "FL*.csv")
+    folder : str
+        Folder containing the CSV files (default: "minute_level_modified")
+    n_samples : int
+        Number of files to sample from each cohort (default: 10)
+    random_seed : int, optional
+        Random seed for reproducible sampling (default: None)
+    verbose : bool
+        Whether to print progress information (default: False)
+    
+    Returns
+    -------
+    list
+        Combined list of sampled filenames from both cohorts
+    """
+    import random
+    import os
+    import glob
+    
+    # Set random seed if provided
+    if random_seed is not None:
+        random.seed(random_seed)
+        if verbose:
+            print(f"Using random seed: {random_seed}")
+    
+    # Get all files matching each pattern
+    co_all_files = glob.glob(os.path.join(folder, co_pattern))
+    fl_all_files = glob.glob(os.path.join(folder, fl_pattern))
+    
+    # Extract just the filenames (without path)
+    co_filenames = [os.path.basename(f) for f in co_all_files]
+    fl_filenames = [os.path.basename(f) for f in fl_all_files]
+    
+    if verbose:
+        print(f"Found {len(co_filenames)} CO files and {len(fl_filenames)} FL files")
+    
+    # Sample files from each cohort
+    co_sampled = random.sample(co_filenames, min(n_samples, len(co_filenames)))
+    fl_sampled = random.sample(fl_filenames, min(n_samples, len(fl_filenames)))
+    
+    if verbose:
+        print(f"Sampled {len(co_sampled)} CO files and {len(fl_sampled)} FL files")
+        print(f"CO samples: {co_sampled}")
+        print(f"FL samples: {fl_sampled}")
+    
+    # Combine all sampled files into a single list
+    all_sampled_files = co_sampled + fl_sampled
+    
+    if verbose:
+        print(f"Total sampled files: {len(all_sampled_files)}")
+    
+    return all_sampled_files
+
+def sample_cohort_files_balanced(
+    co_pattern="CO*.csv", 
+    fl_pattern="FL*.csv", 
+    folder="minute_level_modified", 
+    n_per_cohort=10,
+    random_seed=None,
+    verbose=False
+):
+    """
+    Randomly sample n files from each cohort pattern, ensuring balanced sampling.
+    
+    This function is useful when you want equal representation from each cohort
+    and have enough files in both cohorts.
+    
+    Parameters
+    ----------
+    co_pattern : str
+        Filename pattern for CO cohort (default: "CO*.csv")
+    fl_pattern : str
+        Filename pattern for FL cohort (default: "FL*.csv")
+    folder : str
+        Folder containing the CSV files (default: "minute_level_modified")
+    n_per_cohort : int
+        Number of files to sample from each cohort (default: 10)
+    random_seed : int, optional
+        Random seed for reproducible sampling (default: None)
+    verbose : bool
+        Whether to print progress information (default: False)
+    
+    Returns
+    -------
+    list
+        Combined list of sampled filenames from both cohorts
+    """
+    import random
+    import os
+    import glob
+    
+    # Set random seed if provided
+    if random_seed is not None:
+        random.seed(random_seed)
+        if verbose:
+            print(f"Using random seed: {random_seed}")
+    
+    # Get all files matching each pattern
+    co_all_files = glob.glob(os.path.join(folder, co_pattern))
+    fl_all_files = glob.glob(os.path.join(folder, fl_pattern))
+    
+    # Extract just the filenames (without path)
+    co_filenames = [os.path.basename(f) for f in co_all_files]
+    fl_filenames = [os.path.basename(f) for f in fl_all_files]
+    
+    if verbose:
+        print(f"Found {len(co_filenames)} CO files and {len(fl_filenames)} FL files")
+    
+    # Check if we have enough files in each cohort
+    if len(co_filenames) < n_per_cohort:
+        print(f"Warning: Only {len(co_filenames)} CO files available, sampling all")
+        n_co = len(co_filenames)
+    else:
+        n_co = n_per_cohort
+        
+    if len(fl_filenames) < n_per_cohort:
+        print(f"Warning: Only {len(fl_filenames)} FL files available, sampling all")
+        n_fl = len(fl_filenames)
+    else:
+        n_fl = n_per_cohort
+    
+    # Sample files from each cohort
+    co_sampled = random.sample(co_filenames, n_co)
+    fl_sampled = random.sample(fl_filenames, n_fl)
+    
+    if verbose:
+        print(f"Sampled {len(co_sampled)} CO files and {len(fl_sampled)} FL files")
+        print(f"CO samples: {co_sampled}")
+        print(f"FL samples: {fl_sampled}")
+    
+    # Combine all sampled files into a single list
+    all_sampled_files = co_sampled + fl_sampled
+    
+    if verbose:
+        print(f"Total sampled files: {len(all_sampled_files)}")
+    
+    return all_sampled_files
