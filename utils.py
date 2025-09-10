@@ -364,6 +364,7 @@ def plot_pig_wear_timeseries(
     """
     For each pig_id in the wear CSV, find the corresponding CSV file in input_dir and plot the specified axis timeseries.
     Wear periods are highlighted in green, and valid wear hours are displayed in the title.
+    Uses a 2-column grid layout similar to plot_all_circadian_rhythms.
     
     Parameters:
         wear_csv (str): Path to CSV file containing 'pig_id' and wear_start_/wear_end_ columns
@@ -377,6 +378,7 @@ def plot_pig_wear_timeseries(
     import glob
     import re
     import matplotlib.pyplot as plt
+    import numpy as np
 
     wear_df = pd.read_csv(wear_csv)
     wear_df.columns = [c.strip() for c in wear_df.columns]
@@ -392,6 +394,8 @@ def plot_pig_wear_timeseries(
     else:
         csv_files = all_csv_files
 
+    # Collect data for all pigs first
+    pig_data = []
     for idx, row in wear_df.iterrows():
         if limit is not None and idx >= limit:
             break
@@ -421,12 +425,7 @@ def plot_pig_wear_timeseries(
             plot_data = df[f'{axis}']
             axis_label = f'{axis} axis'
 
-        plt.figure(figsize=(12, 2))
-        plt.plot(ts, plot_data, label=f"{file_label} {axis_label}")
-        plt.axvline(ts.min(), color='g', linestyle='--', label='Min timestamp')
-        plt.axvline(ts.max(), color='r', linestyle='--', label='Max timestamp')
-
-        # Plot wear periods as green bands and collect valid wear intervals
+        # Collect wear periods
         wear_intervals = []
         n_max_wear_periods = (wear_df.shape[1] - 1) // 2
 
@@ -442,19 +441,73 @@ def plot_pig_wear_timeseries(
                 end_dt = min(end_dt, ts.max())
                 if start_dt > ts.max():
                     continue
-                plt.axvspan(start_dt, end_dt, color='green', alpha=0.2)
                 wear_intervals.append((start_dt, end_dt))
 
         # Calculate valid wear hours
         wear_hours = sum((end - start).total_seconds() / 3600.0 for start, end in wear_intervals)
-
-        # Calculate total hours covered by the timeseries
         total_hours = ((ts.max().floor('h') - ts.min().floor('h')).total_seconds() / 3600.0) if not ts.empty else 0.0
 
-        plt.xlabel('Timestamp')
-        plt.ylabel(f'{axis_label} data')
-        plt.title(f'{axis_label} data for {file_label} (valid wear hours: {round(wear_hours)}/{round(total_hours)})')
-        plt.show()
+        pig_data.append({
+            'ts': ts,
+            'plot_data': plot_data,
+            'file_label': file_label,
+            'axis_label': axis_label,
+            'wear_intervals': wear_intervals,
+            'wear_hours': wear_hours,
+            'total_hours': total_hours
+        })
+
+    # Create 2-column grid layout (same as plot_all_circadian_rhythms)
+    n_samples = len(pig_data)
+    n_cols = 2  # 2 columns as requested
+    n_rows = (n_samples + 1) // 2  # Calculate rows needed
+    
+    # Determine figure size based on number of samples
+    fig_width = 15  # Fixed width
+    fig_height = 4 * n_rows  # Dynamic height based on number of rows (3 units per row for timeseries)
+    figsize = (fig_width, fig_height)
+    
+    # Create figure with subplots
+    fig, axes = plt.subplots(n_rows, n_cols, figsize=figsize)
+    
+    # Handle case where we have only one row
+    if n_rows == 1:
+        axes = axes.reshape(1, -1)
+    elif n_samples == 1:
+        axes = np.array([[axes]])
+
+    # Plot each pig's data
+    for i, data in enumerate(pig_data):
+        row = i // n_cols
+        col = i % n_cols
+        ax = axes[row, col]
+        
+        # Plot the timeseries
+        ax.plot(data['ts'], data['plot_data'], label=f"{data['file_label']} {data['axis_label']}")
+        ax.axvline(data['ts'].min(), color='g', linestyle='--', label='Min timestamp')
+        ax.axvline(data['ts'].max(), color='r', linestyle='--', label='Max timestamp')
+
+        # Plot wear periods as green bands
+        for start_dt, end_dt in data['wear_intervals']:
+            ax.axvspan(start_dt, end_dt, color='green', alpha=0.2)
+
+        # Customize subplot
+        ax.set_xlabel('Timestamp')
+        ax.set_ylabel(f'{data["axis_label"]} (g)')
+        ax.set_title(f'{data["file_label"].replace(".csv", "")} (valid wear hours: {round(data["wear_hours"])}/{round(data["total_hours"])})')
+        ax.grid(True, alpha=0.3)
+
+    # Hide empty subplots if any
+    for i in range(n_samples, n_rows * n_cols):
+        row = i // n_cols
+        col = i % n_cols
+        axes[row, col].set_visible(False)
+
+    # Add main title and adjust layout
+    plt.suptitle(f'{axis_label} Timeseries with Wear Periods - All Samples', y=0.95, fontsize=16)
+    plt.tight_layout(rect=[0, 0, 1, 0.95])
+
+    plt.show()
 
 def smart_fill_non_wear(df, wear_mask, day_start="07:00", day_end="19:00"):
     """
@@ -767,11 +820,19 @@ def compare_cohorts_daily_signal(
     # ----------------------
     # Plot
     # ----------------------
-    for column in columns:
+    # Create a single figure with subplots
+    n_columns = len(columns)
+    fig, axes = plt.subplots(n_columns, 1, figsize=(15, 4 * n_columns))
+    
+    # Handle case where we have only one column
+    if n_columns == 1:
+        axes = [axes]
+    
+    for i, column in enumerate(columns):
         co_grouped = group_by_hour_quartiles(co_data, column)
         fl_grouped = group_by_hour_quartiles(fl_data, column)
         
-        plt.figure(figsize=(12, 3))
+        ax = axes[i]
         
         # Plot CO cohort
         co_hours = co_grouped['hour']
@@ -784,17 +845,17 @@ def compare_cohorts_daily_signal(
         if plot_minmax:
             co_min = co_grouped['min']
             co_max = co_grouped['max']
-            plt.plot(co_hours, co_min, color='blue', alpha=0.7, linewidth=0.8, label='CO min/max')
-            plt.plot(co_hours, co_max, color='blue', alpha=0.7, linewidth=0.8)
+            ax.plot(co_hours, co_min, color='blue', alpha=0.7, linewidth=0.8, label='CO min/max')
+            ax.plot(co_hours, co_max, color='blue', alpha=0.7, linewidth=0.8)
         
         # Plot IQR box (Q1 to Q3)
-        plt.fill_between(co_hours, co_q1, co_q3, color='blue', alpha=0.3, label='CO IQR')
+        ax.fill_between(co_hours, co_q1, co_q3, color='blue', alpha=0.3, label='CO IQR')
         
         # Plot mean as solid line
-        plt.plot(co_hours, co_mean, color='blue', linewidth=2, label='CO mean')
+        ax.plot(co_hours, co_mean, color='blue', linewidth=2, label='CO mean')
         
         # Plot median as dashed line
-        plt.plot(co_hours, co_q2, color='blue', linewidth=2, linestyle='--', label='CO median')
+        ax.plot(co_hours, co_q2, color='blue', linewidth=2, linestyle='--', label='CO median')
         
         # Plot FL cohort
         fl_hours = fl_grouped['hour']
@@ -807,30 +868,39 @@ def compare_cohorts_daily_signal(
         if plot_minmax:
             fl_min = fl_grouped['min']
             fl_max = fl_grouped['max']
-            plt.plot(fl_hours, fl_min, color='red', alpha=0.7, linewidth=0.8, label='FL min/max')
-            plt.plot(fl_hours, fl_max, color='red', alpha=0.7, linewidth=0.8)
+            ax.plot(fl_hours, fl_min, color='red', alpha=0.7, linewidth=0.8, label='FL min/max')
+            ax.plot(fl_hours, fl_max, color='red', alpha=0.7, linewidth=0.8)
         
         # Plot IQR box (Q1 to Q3)
-        plt.fill_between(fl_hours, fl_q1, fl_q3, color='red', alpha=0.3, label='FL IQR')
+        ax.fill_between(fl_hours, fl_q1, fl_q3, color='red', alpha=0.3, label='FL IQR')
         
         # Plot mean as solid line
-        plt.plot(fl_hours, fl_mean, color='red', linewidth=2, label='FL mean')
+        ax.plot(fl_hours, fl_mean, color='red', linewidth=2, label='FL mean')
         
         # Plot median as dashed line
-        plt.plot(fl_hours, fl_q2, color='red', linewidth=2, linestyle='--', label='FL median')
+        ax.plot(fl_hours, fl_q2, color='red', linewidth=2, linestyle='--', label='FL median')
         
-        plt.xlabel('Hour of Day')
-        plt.ylabel(column)
+        ax.set_xlabel('Hour of Day')
+        if column == 'enmo':
+            ax.set_ylabel('ENMO (g)')
+        else:
+            ax.set_ylabel(f"{column} (g)")
         title_suffix = " with Min/Max" if plot_minmax else ""
-        plt.title(f'Comparison of {column} Daily Signal: Mean (solid), Median (dashed), and IQR{title_suffix}')
-        plt.legend()
-        plt.xlim(0, 24)
-        plt.grid(alpha=0.3)
+        ax.set_title(f'Comparison of {column} Daily Signal: Mean (solid), Median (dashed), and IQR{title_suffix}')
+        ax.legend()
+        ax.set_xlim(0, 24)
+        ax.grid(alpha=0.3)
         
         ticks = np.arange(0, 25, 6)
         tick_labels = [f'{int(t):02d}:00' for t in ticks]
-        plt.xticks(ticks, tick_labels)
-        plt.show()
+        ax.set_xticks(ticks)
+        ax.set_xticklabels(tick_labels)
+    
+    # Add overall title and adjust layout
+    title_suffix = " with Min/Max" if plot_minmax else ""
+    plt.suptitle(f'Cohort Comparison: CO vs FL Daily Signals{title_suffix}', y=0.95, fontsize=16)
+    plt.tight_layout(rect=[0, 0, 1, 0.95])
+    plt.show()
 
 def load_cohort_data(modified_dir="minute_level_modified", header_dir="headers", pattern="CO*.csv", preprocess_args=None, file_names=None):
     """
@@ -924,7 +994,7 @@ def plot_cohort_feature_comparison(co_features, fl_features, title=None, plot_mi
     numeric_cols = df_co.select_dtypes(include=[np.number]).columns
     numeric_cols = [col for col in numeric_cols if col != 'individual_id']
     
-    fig, axes = plt.subplots(len(numeric_cols), 1, figsize=(12, len(numeric_cols)), sharex=False)
+    fig, axes = plt.subplots(len(numeric_cols), 1, figsize=(15, len(numeric_cols)), sharex=False)
     if len(numeric_cols) == 1:
         axes = [axes]
     
@@ -1571,7 +1641,6 @@ def plot_cohort_demographics(co_cosinor_age_inputs, fl_cosinor_age_inputs, title
     ax2.set_title('Gender Distribution by Cohort')
     ax2.set_xticks(x)
     ax2.set_xticklabels(all_genders)
-    ax2.legend()
     ax2.grid(True, alpha=0.3, axis='y')
     
     # Add total counts as text
@@ -1581,7 +1650,7 @@ def plot_cohort_demographics(co_cosinor_age_inputs, fl_cosinor_age_inputs, title
     
     # Set overall title if provided
     if title:
-        fig.suptitle(title, fontsize=16, y=1.02)
+        fig.suptitle(title, fontsize=16, y=0.95)
     
     plt.tight_layout()
     plt.show()
@@ -1739,3 +1808,172 @@ def sample_cohort_files_balanced(
         print(f"Total sampled files: {len(all_sampled_files)}")
     
     return all_sampled_files
+
+
+def plot_individual_circadian_rhythm(file_path, column='enmo', title=None, figsize=(15, 6)):
+    """
+    Plot 24-hour circadian rhythm for a single sample.
+    Shows individual days as light grey lines and mean as bold line.
+    
+    Parameters:
+    -----------
+    file_path : str
+        Path to the CSV file
+    column : str
+        Column to plot (default: 'enmo')
+    title : str
+        Title for the plot (default: filename)
+    figsize : tuple
+        Figure size (width, height)
+    """
+    import pandas as pd
+    import matplotlib.pyplot as plt
+    import numpy as np
+    import os
+    
+    # Load data
+    df = pd.read_csv(file_path, parse_dates=['timestamp'])
+    
+    # Calculate ENMO if not present
+    if 'enmo' not in df.columns and column == 'enmo':
+        df['enmo'] = np.sqrt(df['x']**2 + df['y']**2 + df['z']**2) - 1
+        df['enmo'] = df['enmo'].clip(lower=0)
+    
+    # Extract hour of day (0-24)
+    df['hour'] = df['timestamp'].dt.hour + df['timestamp'].dt.minute/60 + df['timestamp'].dt.second/3600
+    
+    # Extract date for grouping days
+    df['date'] = df['timestamp'].dt.date
+    
+    # Get unique dates
+    unique_dates = df['date'].unique()
+    
+    # Create figure
+    plt.figure(figsize=figsize)
+    
+    # Plot individual days as light grey lines
+    for date in unique_dates:
+        day_data = df[df['date'] == date]
+        if len(day_data) > 0:
+            plt.plot(day_data['hour'], day_data[column], 
+                    color='lightgrey', alpha=0.6, linewidth=0.8)
+    
+    # Calculate and plot mean circadian rhythm
+    hourly_mean = df.groupby('hour')[column].mean()
+    plt.plot(hourly_mean.index, hourly_mean.values, 
+            color='black', linewidth=3, label='Mean')
+    
+    # Customize plot
+    plt.xlabel('Hour of Day')
+    plt.ylabel(f'{column.upper()} (g)')
+    plt.title(title or f'24-Hour Circadian Rhythm - {os.path.basename(file_path)}')
+    plt.xlim(0, 24)
+    plt.xticks(range(0, 25, 4))
+    plt.grid(True, alpha=0.3)
+    plt.legend()
+    plt.tight_layout()
+    
+    return plt.gcf()
+
+
+def plot_all_circadian_rhythms(file_names=None, data_dir="minute_level_modified", column='enmo', 
+                              title="24-Hour Circadian Rhythms - All Samples"):
+    """
+    Plot 24-hour circadian rhythms for all samples in a 2-column grid layout.
+    Shows individual days as light grey lines and mean as bold line for each sample.
+    
+    Parameters:
+    -----------
+    file_names : list, optional
+        List of CSV filenames to plot. If None, all CSV files in data_dir will be used.
+    data_dir : str
+        Directory containing the CSV files (default: "minute_level_modified")
+    column : str
+        Column to plot (default: 'enmo')
+    title : str
+        Main title for the entire plot
+    """
+    import pandas as pd
+    import matplotlib.pyplot as plt
+    import numpy as np
+    import os
+    import glob
+    
+    # If file_names is not specified, get all CSV files from data_dir
+    if file_names is None:
+        csv_pattern = os.path.join(data_dir, "*.csv")
+        file_names = [os.path.basename(f) for f in glob.glob(csv_pattern)]
+        file_names.sort()  # Sort for consistent ordering
+    
+    # Calculate grid layout
+    n_samples = len(file_names)
+    n_cols = 2  # 2 columns as requested
+    n_rows = (n_samples + 1) // 2  # Calculate rows needed
+    
+    # Determine figure size based on number of samples
+    fig_width = 15  # Fixed width
+    fig_height = 4 * n_rows  # Dynamic height based on number of rows
+    figsize = (fig_width, fig_height)
+    
+    # Create figure with subplots
+    fig, axes = plt.subplots(n_rows, n_cols, figsize=figsize)
+    
+    # Handle case where we have only one row
+    if n_rows == 1:
+        axes = axes.reshape(1, -1)
+    elif n_samples == 1:
+        axes = np.array([[axes]])
+    
+    # Plot each sample
+    for i, filename in enumerate(file_names):
+        row = i // n_cols
+        col = i % n_cols
+        ax = axes[row, col]
+        
+        # Load data for this sample
+        file_path = os.path.join(data_dir, filename)
+        df = pd.read_csv(file_path, parse_dates=['timestamp'])
+        
+        # Calculate ENMO if not present
+        if 'enmo' not in df.columns and column == 'enmo':
+            df['enmo'] = np.sqrt(df['x']**2 + df['y']**2 + df['z']**2) - 1
+            df['enmo'] = df['enmo'].clip(lower=0)
+        
+        # Extract hour of day and date
+        df['hour'] = df['timestamp'].dt.hour + df['timestamp'].dt.minute/60 + df['timestamp'].dt.second/3600
+        df['date'] = df['timestamp'].dt.date
+        
+        # Get unique dates
+        unique_dates = df['date'].unique()
+        
+        # Plot individual days as light grey lines
+        for date in unique_dates:
+            day_data = df[df['date'] == date]
+            if len(day_data) > 0:
+                ax.plot(day_data['hour'], day_data[column], 
+                       color='lightgrey', alpha=0.6, linewidth=0.8)
+        
+        # Calculate and plot mean circadian rhythm
+        hourly_mean = df.groupby('hour')[column].mean()
+        ax.plot(hourly_mean.index, hourly_mean.values, 
+               color='black', linewidth=3, label='Mean')
+        
+        # Customize subplot
+        ax.set_xlabel('Hour of Day')
+        ax.set_ylabel(f'{column.upper()} (g)')
+        ax.set_title(f'{filename.replace(".csv", "")}')
+        ax.set_xlim(0, 24)
+        ax.set_xticks(range(0, 25, 4))
+        ax.grid(True, alpha=0.3)
+    
+    # Hide empty subplots if any
+    for i in range(n_samples, n_rows * n_cols):
+        row = i // n_cols
+        col = i % n_cols
+        axes[row, col].set_visible(False)
+    
+    # Add main title and adjust layout
+    plt.suptitle(title, y=1, fontsize=16)
+    plt.tight_layout()
+
+    plt.show()
