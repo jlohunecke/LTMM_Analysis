@@ -2043,6 +2043,7 @@ def predict_cosinorage(chronological_age, gender, acrophase, mesor, amplitude):
 import numpy as np
 import pandas as pd
 import plotly.express as px
+import plotly.graph_objects as go
 
 def explore_cosinorage_3d(
     mean_acrophase: float,
@@ -2050,7 +2051,6 @@ def explore_cosinorage_3d(
     mean_amplitude: float,
     chronological_age: float,
     gender: str,
-    delta_acrophase: float,
     delta_mesor: float,
     delta_amplitude: float
 ):
@@ -2071,9 +2071,8 @@ def explore_cosinorage_3d(
     predict_cosinorage : callable
         Function with signature (age, gender, acrophase, mesor, amplitude) -> float
     """
-    # 21 points = 10 evenly spaced on each side plus the mean
-    acrophase_vals = np.linspace(mean_acrophase - delta_acrophase,
-                                 mean_acrophase + delta_acrophase, 21)
+    # 21 points evenly spaced between -2π and 0
+    acrophase_vals = np.linspace(-2 * np.pi, 0, 21)
     mesor_vals     = np.linspace(mean_mesor - delta_mesor,
                                  mean_mesor + delta_mesor, 21)
     amplitude_vals = np.linspace(mean_amplitude - delta_amplitude,
@@ -2086,6 +2085,8 @@ def explore_cosinorage_3d(
         columns=["acrophase", "mesor", "amplitude"]
     )
 
+    grid["acrophase_time"] = -( grid["acrophase"] + 2 * np.pi) / (2 * np.pi) * 24 + 24
+
     # Compute predicted cosinorage for each combination
     grid["cosinorage"] = grid.apply(
         lambda r: predict_cosinorage(
@@ -2096,7 +2097,7 @@ def explore_cosinorage_3d(
 
     fig = px.scatter_3d(
         grid,
-        x="acrophase",
+        x="acrophase_time",
         y="mesor",
         z="amplitude",
         color="cosinorage",
@@ -2104,4 +2105,10 @@ def explore_cosinorage_3d(
         opacity=0.7,
         size_max=4
     )
+
+    mean_acrophase_time = -(mean_acrophase + 2 * np.pi) / (2 * np.pi) * 24 + 24
+    fig.add_scatter3d(x=[mean_acrophase_time], y=[mean_mesor], z=[mean_amplitude],
+                  mode='markers', marker=dict(color='red', size=8),
+                  name='Mean')
+
     fig.show()
