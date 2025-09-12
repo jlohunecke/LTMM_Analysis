@@ -1087,6 +1087,9 @@ def plot_cohort_feature_comparison(co_features, fl_features, title=None, plot_mi
     plt.tight_layout(rect=[0.05,0,0.95,0.97])
     plt.show()
 
+    return comparison_data
+
+
 def extract_features_to_dataframe(individual_features):
     """
     Extract individual features from the nested structure and organize into a DataFrame.
@@ -1555,6 +1558,7 @@ def plot_cohort_demographics(co_cosinor_age_inputs, fl_cosinor_age_inputs, title
     
     # CO cohort age data
     co_age_mean = co_age_stats.get('mean', 0)
+    print(f"CO age mean: {co_age_mean}")
     co_age_median = co_age_stats.get('50%', 0)
     co_age_q1 = co_age_stats.get('25%', 0)
     co_age_q3 = co_age_stats.get('75%', 0)
@@ -1563,6 +1567,7 @@ def plot_cohort_demographics(co_cosinor_age_inputs, fl_cosinor_age_inputs, title
     
     # FL cohort age data
     fl_age_mean = fl_age_stats.get('mean', 0)
+    print(f"FL age mean: {fl_age_mean}")
     fl_age_median = fl_age_stats.get('50%', 0)
     fl_age_q1 = fl_age_stats.get('25%', 0)
     fl_age_q3 = fl_age_stats.get('75%', 0)
@@ -1977,3 +1982,126 @@ def plot_all_circadian_rhythms(file_names=None, data_dir="minute_level_modified"
     plt.tight_layout()
 
     plt.show()
+
+def predict_cosinorage(chronological_age, gender, acrophase, mesor, amplitude):
+
+    # model parameters
+    model_params_generic = {
+        "shape": 0.01462774,
+        "rate": -13.36715309,
+        "mesor": -0.03204933,
+        "amp1": -0.01971357,
+        "phi1": -0.01664718,
+        "age": 0.10033692,
+    }
+
+    model_params_female = {
+        "shape": 0.01294402,
+        "rate": -13.28530410,
+        "mesor": -0.02569062,
+        "amp1": -0.02170987,
+        "phi1": -0.13191562,
+        "age": 0.08840283,
+    }
+
+    model_params_male = {
+        "shape": 0.013878454,
+        "rate": -13.016951633,
+        "mesor": -0.023988922,
+        "amp1": -0.030620390,
+        "phi1": 0.008960155,
+        "age": 0.101726103,
+    }
+
+    m_n = -1.405276
+    m_d = 0.01462774
+    BA_n = -0.01447851
+    BA_d = 0.112165
+    BA_i = 133.5989
+
+    if gender == "female":
+        coef = model_params_female
+    elif gender == "male":
+        coef = model_params_male
+    else:
+        coef = model_params_generic
+
+    bm_data = {
+        "mesor": mesor,
+        "amp1": amplitude,
+        "phi1": acrophase,
+        "age": chronological_age,
+    }
+
+    n1 = {key: bm_data[key] * coef[key] for key in bm_data}
+    xb = sum(n1.values()) + coef["rate"]
+    m_val = 1 - np.exp((m_n * np.exp(xb)) / m_d)
+    cosinorage = float(((np.log(BA_n * np.log(1 - m_val))) / BA_d) + BA_i)
+
+    return cosinorage
+
+import numpy as np
+import pandas as pd
+import plotly.express as px
+
+def explore_cosinorage_3d(
+    mean_acrophase: float,
+    mean_mesor: float,
+    mean_amplitude: float,
+    chronological_age: float,
+    gender: str,
+    delta_acrophase: float,
+    delta_mesor: float,
+    delta_amplitude: float
+):
+    """
+    Create a 3-D interactive scatter plot showing how cosinorage varies
+    when acrophase, mesor, and amplitude vary around given means.
+
+    Parameters
+    ----------
+    mean_acrophase, mean_mesor, mean_amplitude : float
+        Central values of each parameter.
+    chronological_age : float
+        Chronological age passed to the predictor.
+    gender : str
+        Gender passed to the predictor.
+    delta_acrophase, delta_mesor, delta_amplitude : float
+        +/- range around each mean.
+    predict_cosinorage : callable
+        Function with signature (age, gender, acrophase, mesor, amplitude) -> float
+    """
+    # 21 points = 10 evenly spaced on each side plus the mean
+    acrophase_vals = np.linspace(mean_acrophase - delta_acrophase,
+                                 mean_acrophase + delta_acrophase, 21)
+    mesor_vals     = np.linspace(mean_mesor - delta_mesor,
+                                 mean_mesor + delta_mesor, 21)
+    amplitude_vals = np.linspace(mean_amplitude - delta_amplitude,
+                                 mean_amplitude + delta_amplitude, 21)
+
+    grid = pd.DataFrame(
+        [(a, m, amp) for a in acrophase_vals
+                     for m in mesor_vals
+                     for amp in amplitude_vals],
+        columns=["acrophase", "mesor", "amplitude"]
+    )
+
+    # Compute predicted cosinorage for each combination
+    grid["cosinorage"] = grid.apply(
+        lambda r: predict_cosinorage(
+            chronological_age, gender, r.acrophase, r.mesor, r.amplitude
+        ),
+        axis=1
+    )
+
+    fig = px.scatter_3d(
+        grid,
+        x="acrophase",
+        y="mesor",
+        z="amplitude",
+        color="cosinorage",
+        color_continuous_scale="Viridis",
+        opacity=0.7,
+        size_max=4
+    )
+    fig.show()
