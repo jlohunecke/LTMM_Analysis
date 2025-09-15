@@ -2112,3 +2112,99 @@ def explore_cosinorage_3d(
                   name='Mean')
 
     fig.show()
+
+
+def demographics_table(file, file_names):
+    
+    ids = [f.split(".")[0].replace("-", "") for f in file_names]
+
+    CO_df = pd.read_excel(file, sheet_name="Controls")
+    CO_df =CO_df[CO_df["#"].str.replace("-", "").isin(ids)]
+
+    FL_df = pd.read_excel(file, sheet_name="Fallers")
+    FL_df = FL_df[FL_df["#"].str.replace("-", "").isin(ids)]
+
+    necessary_columns = [
+        'Age',
+        'Gender(0-male,1-female)',
+        'MMSE',
+        '6 Months Fall',
+        ' yr almost',  # missteps in past year
+        'DGI',
+        'BERG',
+        'TUG',
+        'FSST',
+        'base(velocity)',  # gait speed
+        's3(velocity)'
+    ]
+
+    CO_df = CO_df[necessary_columns]
+    FL_df = FL_df[necessary_columns]
+
+    # Define mapping from original column names to desired display names
+    from scipy.stats import ttest_ind, mannwhitneyu
+
+    column_rename = {
+        'Age': 'Age (years)',
+        'Gender(0-male,1-female)': 'Gender (% women)',
+        '6 Months Fall': 'No. of falls in the past 6 months',
+        ' yr almost': 'No. of missteps in the past year',
+        'DGI': 'Dynamic Gait Index',
+        'BERG': 'Berg Balance Scale',
+        'TUG': 'Timed Up and Go (seconds)',
+        'FSST': 'Four Square Step Test (seconds)',
+        'base(velocity)': 'Gait speed (m/s)',
+    }
+    
+    selected_cols = [col for col in column_rename.keys() if col in CO_df.columns and col in FL_df.columns]
+
+    # Calculate means and stds
+    mean_CO = CO_df[selected_cols].mean()
+    std_CO = CO_df[selected_cols].std()
+    mean_FL = FL_df[selected_cols].mean()
+    std_FL = FL_df[selected_cols].std()
+
+    # Format output: for all but "No. of subjects (n)" and "Gender (% women)", show mean ± std
+    rows = []
+    for col in selected_cols:
+        display_name = column_rename[col]
+        # Calculate p-value
+        if display_name == "Gender (% women)":
+            # For gender, use chi-squared or Fisher's exact test, but here just do a simple test for difference in proportions
+            co_val = f"{mean_CO[col]*100:.1f}%"
+            fl_val = f"{mean_FL[col]*100:.1f}%"
+            # Use Fisher's exact test for 2x2 table
+            from scipy.stats import fisher_exact
+            n_female_CO = CO_df[col].sum()
+            n_male_CO = len(CO_df) - n_female_CO
+            n_female_FL = FL_df[col].sum()
+            n_male_FL = len(FL_df) - n_female_FL
+            table = [[n_female_CO, n_male_CO], [n_female_FL, n_male_FL]]
+            try:
+                _, pval = fisher_exact(table)
+            except Exception:
+                pval = float('nan')
+        else:
+            co_val = f"{mean_CO[col]:.3f} ± {std_CO[col]:.3f}"
+            fl_val = f"{mean_FL[col]:.3f} ± {std_FL[col]:.3f}"
+            # Use t-test if both groups have >1 value, otherwise nan
+            co_data = CO_df[col].dropna()
+            fl_data = FL_df[col].dropna()
+            if len(co_data) > 1 and len(fl_data) > 1:
+                # Use Mann-Whitney U for nonparametric, or t-test for parametric
+                try:
+                    _, pval = ttest_ind(co_data, fl_data, equal_var=False, nan_policy='omit')
+                except Exception:
+                    pval = float('nan')
+            else:
+                pval = float('nan')
+        rows.append((display_name, co_val, fl_val, f"{pval:.3g}" if pval==pval else ""))
+
+    # Add first row: No. of subjects (n) as int, p-value is blank
+    n_CO = int(len(CO_df))
+    n_FL = int(len(FL_df))
+    table_rows = [("No. of subjects (n)", n_CO, n_FL, "")]
+    table_rows += rows
+    
+    mean_table = pd.DataFrame(table_rows, columns=["Feature", "CO", "FL", "P value"]).set_index("Feature")
+    display(mean_table)
