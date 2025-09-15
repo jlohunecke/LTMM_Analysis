@@ -2207,4 +2207,224 @@ def demographics_table(file, file_names):
     table_rows += rows
     
     mean_table = pd.DataFrame(table_rows, columns=["Feature", "CO", "FL", "P value"]).set_index("Feature")
-    display(mean_table)
+    
+    # Try to use display if available (Jupyter), otherwise print
+    try:
+        from IPython.display import display
+        display(mean_table)
+    except ImportError:
+        print(mean_table)
+
+
+import numpy as np
+import pandas as pd
+from statsmodels.discrete.count_model import ZeroInflatedPoisson
+from statsmodels.tools import add_constant
+
+def impute_zipln_pmm(df, wear_mask_col='wear', enmo_col='enmo', K=3, D=5, seed=1234):
+    """
+    Impute missing ENMO values in a DataFrame using zero-inflated Poisson lognormal with PMM.
+    Args:
+        df: pandas DataFrame with columns [enmo_col, wear_mask_col]
+        wear_mask_col: column name for wear/nonwear mask (1=worn, 0=not worn)
+        enmo_col: column name for ENMO values
+        K: number of lag/lead covariates
+        D: number of donors for PMM
+        seed: random seed
+    Returns:
+        DataFrame with imputed ENMO values in a new column 'enmo_imputed'
+    """
+    np.random.seed(seed)
+    enmo = df[enmo_col].values.astype(float)
+    mask = df[wear_mask_col].values.astype(bool)
+    N = len(enmo)
+
+    # Set missing values
+    enmo_missing = enmo.copy()
+    enmo_missing[~mask] = np.nan
+
+    # Better initial imputation strategy for accelerometer data
+    # Use only wear period data for initial imputation, and use a low baseline for non-wear
+    wear_data = enmo_missing[mask]
+    if len(wear_data) > 0:
+        # Use a low percentile of wear data as baseline for non-wear periods
+        baseline_val = np.percentile(wear_data, 5)  # 5th percentile of wear data
+        baseline_val = max(baseline_val, 0.0005)  # Ensure it's positive but very low
+    else:
+        baseline_val = 0.0005  # Fallback very low value
+    
+    enmo_init = enmo_missing.copy()
+    enmo_init[~mask] = baseline_val
+
+    # Build lag/lead covariates
+    covariates = []
+    for k in range(-K, K+1):
+        shifted = np.roll(enmo_init, k)
+        if k < 0:
+            shifted[k:] = np.nan
+        elif k > 0:
+            shifted[:k] = np.nan
+        covariates.append(shifted)
+    covariates = np.column_stack(covariates)  # shape (N, 2K+1)
+
+    # Prepare observed/missing masks
+    ry = ~np.isnan(enmo_missing)
+    x = covariates
+
+    # Prepare zs matrix (log(yhat)-log(lambda)), here we use covariates as a proxy
+    zs = covariates
+
+    # Fit ZIP model to observed data
+    x_obs = x[ry, :]
+    x_mis = x[~ry, :]
+    y_obs = enmo_missing[ry]
+
+    # Add constant to covariates
+    x_obs = add_constant(x_obs, has_constant='add')
+    x_mis = add_constant(x_mis, has_constant='add')
+
+    try:
+        zip_model = ZeroInflatedPoisson(y_obs, x_obs, exog_infl=x_obs)
+        zip_res = zip_model.fit(disp=0)
+        yhat_obs = zip_res.predict(x_obs)
+        yhat_mis = zip_res.predict(x_mis)
+    except Exception:
+        # Fallback: mean imputation if ZIP fails
+        yhat_obs = np.full_like(y_obs, np.mean(y_obs))
+        yhat_mis = np.full(x_mis.shape[0], np.mean(y_obs))
+
+    # Lognormal adjustment using lag/lead variables
+    try:
+        # Check if we have enough observed data for covariance calculation
+        if np.sum(ry) < 2 * K + 2:  # Need at least 2K+2 observations for meaningful covariance
+            et_obs = np.zeros(len(y_obs))
+            et_mis = np.zeros(len(yhat_mis))
+        else:
+            Sigma = np.cov(zs[ry, :], rowvar=False)
+            K_center = K  # index of center column
+            Sigma_zz = np.delete(np.delete(Sigma, K_center, axis=0), K_center, axis=1)
+            Sigma_yz = Sigma[K_center, np.arange(Sigma.shape[0]) != K_center]
+            Z_obs = zs[ry, :][:, np.arange(zs.shape[1]) != K_center]
+            Z_mis = zs[~ry, :][:, np.arange(zs.shape[1]) != K_center]
+            
+            # Check if Sigma_zz is invertible and has sufficient rank
+            if Sigma_zz.shape[0] > 0 and Sigma_zz.shape[1] > 0:
+                # Use regularized pseudo-inverse with higher tolerance
+                try:
+                    Sigma_zz_inv = np.linalg.pinv(Sigma_zz, rcond=1e-10)
+                    et_obs = np.dot(Sigma_yz, Sigma_zz_inv).dot(Z_obs.T)
+                    et_mis = np.dot(Sigma_yz, Sigma_zz_inv).dot(Z_mis.T)
+                except np.linalg.LinAlgError:
+                    # If still fails, use identity matrix as fallback
+                    et_obs = np.zeros(Z_obs.shape[0])
+                    et_mis = np.zeros(Z_mis.shape[0])
+            else:
+                # Fallback when covariance matrix is empty
+                et_obs = np.zeros(Z_obs.shape[0])
+                et_mis = np.zeros(Z_mis.shape[0])
+    except Exception:
+        # Complete fallback - no lognormal adjustment
+        et_obs = np.zeros(len(y_obs))
+        et_mis = np.zeros(len(yhat_mis))
+
+    # Adjust predictions
+    yhat_obs_adj = yhat_obs * np.exp(et_obs)
+    yhat_mis_adj = yhat_mis * np.exp(et_mis)
+
+    # Predictive mean matching with bias toward lower values for non-wear periods
+    imputed = []
+    for pred in yhat_mis_adj:
+        diffs = np.abs(yhat_obs_adj - pred)
+        donor_idxs = np.argsort(diffs)[:D]
+        donor_pool = y_obs[donor_idxs]
+        
+        # For non-wear periods, bias selection toward lower values
+        # Weight selection by inverse of value (prefer lower values)
+        weights = 1.0 / (donor_pool + 0.001)  # Add small constant to avoid division by zero
+        weights = weights / weights.sum()  # Normalize weights
+        
+        # Select from donor pool with weighted probability
+        selected_idx = np.random.choice(len(donor_pool), p=weights)
+        imputed.append(donor_pool[selected_idx])
+    imputed = np.array(imputed)
+
+    # Fill in imputed values
+    enmo_imputed = enmo_missing.copy()
+    enmo_imputed[~ry] = imputed
+
+    df['enmo_imputed'] = enmo_imputed
+    return df
+
+
+def impute_acc(pig_id, wear_periods_file):
+    input_file_path = f"minute_level/{pig_id.replace('-', '')}.csv"
+    df = pd.read_csv(input_file_path)
+
+    wear_periods = pd.read_csv(wear_periods_file)
+    wear_periods.columns = wear_periods.columns.str.strip()
+    # Clean the pig_id column data (remove trailing spaces)
+    wear_periods['pig_id'] = wear_periods['pig_id'].str.strip()
+    # Filter for the current pig_id
+    wear_periods = wear_periods[wear_periods['pig_id'] == pig_id]
+    
+    # Check if we found any matching pig_id
+    if len(wear_periods) == 0:
+        print(f"Warning: No wear periods found for pig_id '{pig_id}' in {wear_periods_file}")
+        print("Available pig_ids:", wear_periods['pig_id'].unique() if 'pig_id' in wear_periods.columns else "No pig_id column found")
+        # Return original data without wear mask
+        df['wear'] = 1  # Assume all data is wear time
+        df['enmo'] = np.sqrt(df['x']**2 + df['y']**2 + df['z']**2) - 1
+        df['enmo'] = df['enmo'].clip(lower=0)
+        return df
+
+    # Build a wear mask column for the minute-level data
+    # First, collect all wear period start/end pairs for this pig
+    wear_starts = []
+    wear_ends = []
+    for col in wear_periods.columns:
+        if col.startswith('wear_start_'):
+            idx = col.split('_')[-1]
+            start_val = wear_periods.iloc[0][col]
+            end_col = f'wear_end_{idx}'
+            end_val = wear_periods.iloc[0][end_col] if end_col in wear_periods.columns else None
+            if pd.notnull(start_val) and pd.notnull(end_val):
+                wear_starts.append(pd.to_datetime(start_val, errors='coerce'))
+                wear_ends.append(pd.to_datetime(end_val, errors='coerce'))
+
+    # The column is called 'timestamp'
+    df['timestamp'] = pd.to_datetime(df['timestamp'], errors='coerce')
+
+    # Initialize wear mask as False
+    wear_mask = np.zeros(len(df), dtype=bool)
+    for start, end in zip(wear_starts, wear_ends):
+        if pd.isnull(start) or pd.isnull(end):
+            continue
+        wear_mask |= (df['timestamp'] >= start) & (df['timestamp'] <= end)
+    df['wear'] = wear_mask.astype(int)
+
+    df['enmo'] = np.sqrt(df['x']**2 + df['y']**2 + df['z']**2) - 1
+    df['enmo'] = df['enmo'].clip(lower=0)
+
+
+    plt.figure(figsize=(15, 5))
+    plt.plot(df['timestamp'], df['enmo'], label='ENMO')
+    # Mark wear periods in green
+    wear_mask = df['wear'].astype(bool).values
+    plt.fill_between(df['timestamp'], df['enmo'].min(), df['enmo'].max(), where=wear_mask, color='green', alpha=0.2, label='Wear period')
+    plt.legend()
+    plt.show()
+    
+    df = impute_zipln_pmm(df, wear_mask_col='wear', enmo_col='enmo', K=3, D=5, seed=1234)
+    df['enmo_imputed'] = df['enmo_imputed'].clip(lower=0)
+    df['enmo'] = df['enmo_imputed']
+    df = df.drop(columns=['enmo_imputed'])
+
+    plt.figure(figsize=(15, 5))
+    plt.plot(df['timestamp'], df['enmo'], label='ENMO')
+    # Mark wear periods in green
+    wear_mask = df['wear'].astype(bool).values
+    plt.fill_between(df['timestamp'], df['enmo'].min(), df['enmo'].max(), where=wear_mask, color='green', alpha=0.2, label='Wear period')
+    plt.legend()
+    plt.show()
+
+    return df
