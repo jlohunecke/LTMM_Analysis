@@ -6,6 +6,8 @@ import matplotlib.pyplot as plt
 import numpy as np
 import cosinorage as csa
 import random
+from matplotlib.lines import Line2D
+
 
 def recompute_wear_periods(
     input_dir="minute_level",
@@ -415,7 +417,7 @@ def plot_pig_wear_timeseries(
         file_label = os.path.basename(csv_file)
 
         # Handle ENMO axis computation
-        if axis == 'enmo':
+        if axis == 'enmo' and 'enmo' not in df.columns:
             # Compute ENMO: sqrt(x² + y² + z²) - 1, clipped to non-negative values
             enmo = np.sqrt(df['x']**2 + df['y']**2 + df['z']**2) - 1
             enmo = enmo.clip(lower=0)
@@ -610,13 +612,15 @@ def save_modified_timeseries(
     max_wear_periods=1000,
     day_start="07:00",
     day_end="19:00",
-    smart=False
+    smart=False,
+    use_impute_acc=True
 ):
     """
     For each pig_id in wear_df, locate the matching timeseries CSV,
-    truncate at last wear period or file end, fill non-wear with wear mean during day
-    and 0 during night (cutoff times settable by parameter),
-    save modified data.
+    truncate at last wear period or file end, and impute non-wear periods.
+    
+    If use_impute_acc=True, uses the impute_acc function for sophisticated imputation.
+    Otherwise, uses the original filling strategies (smart or simple day/night).
 
     Parameters
     ----------
@@ -635,6 +639,10 @@ def save_modified_timeseries(
     smart : bool
         If True, use smart filling strategy (same time on other days, etc.)
         If False, use simple day/night filling (original behavior)
+        Only used when use_impute_acc=False
+    use_impute_acc : bool
+        If True, use impute_acc function for sophisticated imputation
+        If False, use original filling strategies
     """
     import datetime
 
@@ -690,51 +698,85 @@ def save_modified_timeseries(
         df_valid = df.loc[valid_mask].copy()
         wear_mask_valid = wear_mask[valid_mask]
 
-        # Compute average during wear for each axis
-        wear_mean_x = df_valid.loc[wear_mask_valid, 'x'].mean() if wear_mask_valid.any() else df_valid['x'].mean()
-        wear_mean_y = df_valid.loc[wear_mask_valid, 'y'].mean() if wear_mask_valid.any() else df_valid['y'].mean()
-        wear_mean_z = df_valid.loc[wear_mask_valid, 'z'].mean() if wear_mask_valid.any() else df_valid['z'].mean()
+        if use_impute_acc:
+            # Use impute_acc function for sophisticated imputation
+            try:
+                # Create a temporary DataFrame with the required structure for impute_acc
+                temp_df = df_valid.copy()
+                temp_df['wear'] = wear_mask_valid.astype(int)
+                
+                # Calculate ENMO column first (required by impute_zipln_pmm)
+                temp_df['enmo'] = np.sqrt(temp_df['x']**2 + temp_df['y']**2 + temp_df['z']**2) - 1
+                temp_df['enmo'] = temp_df['enmo'].clip(lower=0)
+                
+                # Apply impute_acc function
+                df_imputed = impute_zipln_pmm(temp_df, wear_mask_col='wear', enmo_col='enmo', K=3, D=5, seed=1234)
+                
+                # Use the imputed ENMO values
+                df_filled = df_valid.copy()
+                df_filled['enmo'] = df_imputed['enmo_imputed'].clip(lower=0)
+                
+                # Remove the temporary wear column if it was added
+                if 'wear' in df_filled.columns:
+                    df_filled = df_filled.drop(columns=['wear'])
+                   
+            except Exception as e:
+                print(f"Error using impute_acc for {pig_id}: {str(e)}")
+                import traceback
+                print("Full traceback:")
+                traceback.print_exc()
+                print(f"Falling back to original filling strategy")
+                # Fall back to original strategy
+                use_impute_acc = False
+        
+        if not use_impute_acc:
+            # Use original filling strategies
+            # Compute average during wear for each axis
+            wear_mean_x = df_valid.loc[wear_mask_valid, 'x'].mean() if wear_mask_valid.any() else df_valid['x'].mean()
+            wear_mean_y = df_valid.loc[wear_mask_valid, 'y'].mean() if wear_mask_valid.any() else df_valid['y'].mean()
+            wear_mean_z = df_valid.loc[wear_mask_valid, 'z'].mean() if wear_mask_valid.any() else df_valid['z'].mean()
 
-        # Determine day/night for each timestamp
-        # Day: day_start <= time < day_end, else night
-        times = ts_valid.dt.time
-        is_day = times.apply(
-            lambda t: (day_start_time <= t < day_end_time)
-            if day_start_time < day_end_time
-            else (t >= day_start_time or t < day_end_time)
-        )
+            # Determine day/night for each timestamp
+            # Day: day_start <= time < day_end, else night
+            times = ts_valid.dt.time
+            is_day = times.apply(
+                lambda t: (day_start_time <= t < day_end_time)
+                if day_start_time < day_end_time
+                else (t >= day_start_time or t < day_end_time)
+            )
 
-        # Fill non-wear periods using either smart or simple strategy
-        df_filled = df_valid.copy()
-        non_wear_mask = ~wear_mask_valid
+            # Fill non-wear periods using either smart or simple strategy
+            df_filled = df_valid.copy()
+            non_wear_mask = ~wear_mask_valid
 
-        if smart and non_wear_mask.any():
-            # Use smart filling strategy
-            #print(f"Using smart filling for {pig_id} ({non_wear_mask.sum()} non-wear periods)")
-            df_filled = smart_fill_non_wear(df_filled, wear_mask_valid, day_start, day_end)
-        else:
-            # Use simple day/night filling (original behavior)
-            #if non_wear_mask.any():
-                #print(f"Using simple filling for {pig_id} ({non_wear_mask.sum()} non-wear periods)")
-            
-            # Set up boolean masks for non-wear during day and night
-            non_wear_day_mask = non_wear_mask & is_day.values
-            non_wear_night_mask = non_wear_mask & (~is_day.values)
+            if smart and non_wear_mask.any():
+                # Use smart filling strategy
+                df_filled = smart_fill_non_wear(df_filled, wear_mask_valid, day_start, day_end)
+            else:
+                # Use simple day/night filling (original behavior)
+                # Set up boolean masks for non-wear during day and night
+                non_wear_day_mask = non_wear_mask & is_day.values
+                non_wear_night_mask = non_wear_mask & (~is_day.values)
 
-            # Apply modifications to x axis
-            df_filled.loc[non_wear_day_mask, 'x'] = wear_mean_x
-            df_filled.loc[non_wear_night_mask, 'x'] = 0.0
-            
-            # Apply modifications to y axis
-            df_filled.loc[non_wear_day_mask, 'y'] = wear_mean_y
-            df_filled.loc[non_wear_night_mask, 'y'] = 0.0
-            
-            # Apply modifications to z axis
-            df_filled.loc[non_wear_day_mask, 'z'] = wear_mean_z
-            df_filled.loc[non_wear_night_mask, 'z'] = 0.0
+                # Apply modifications to x axis
+                df_filled.loc[non_wear_day_mask, 'x'] = wear_mean_x
+                df_filled.loc[non_wear_night_mask, 'x'] = 0.0
+                
+                # Apply modifications to y axis
+                df_filled.loc[non_wear_day_mask, 'y'] = wear_mean_y
+                df_filled.loc[non_wear_night_mask, 'y'] = 0.0
+                
+                # Apply modifications to z axis
+                df_filled.loc[non_wear_day_mask, 'z'] = wear_mean_z
+                df_filled.loc[non_wear_night_mask, 'z'] = 0.0
 
-        # Save to CSV
-        cols_to_save = [c for c in ['timestamp', 'x', 'y', 'z'] if c in df_filled.columns]
+        # Ensure ENMO column is present
+        if 'enmo' not in df_filled.columns:
+            df_filled['enmo'] = np.sqrt(df_filled['x']**2 + df_filled['y']**2 + df_filled['z']**2) - 1
+            df_filled['enmo'] = df_filled['enmo'].clip(lower=0)
+
+        # Save to CSV with ENMO column included
+        cols_to_save = [c for c in ['timestamp', 'x', 'y', 'z', 'enmo'] if c in df_filled.columns]
         output_path = os.path.join(output_dir, file_label)
         df_filled[cols_to_save].to_csv(output_path, index=False)
 
@@ -976,7 +1018,7 @@ def load_cohort_data(modified_dir="minute_level_modified", header_dir="headers",
 
     return data_handlers, cosinor_age_inputs
 
-def plot_cohort_feature_comparison(co_features, fl_features, title=None, plot_minmax=True):
+def plot_cohort_feature_comparison(co_features, fl_features, title=None, plot_minmax=True, plot=True, sample_size=None):
     """
     Plots a horizontal bar chart comparing two cohorts for a set of features using quartiles, mean, max, and median.
     
@@ -987,16 +1029,17 @@ def plot_cohort_feature_comparison(co_features, fl_features, title=None, plot_mi
         plot_minmax: bool, whether to plot min/max whiskers (default: True)
     """
     # Extract features to DataFrames
-    df_co = extract_features_to_dataframe(co_features.get_individual_features())
-    df_fl = extract_features_to_dataframe(fl_features.get_individual_features())
+    df_co = extract_features_to_dataframe(co_features.get_individual_features(), sample_size=sample_size)
+    df_fl = extract_features_to_dataframe(fl_features.get_individual_features(), sample_size=sample_size)
     
     # Get numeric features (exclude individual_id)
     numeric_cols = df_co.select_dtypes(include=[np.number]).columns
     numeric_cols = [col for col in numeric_cols if col != 'individual_id']
     
-    fig, axes = plt.subplots(len(numeric_cols), 1, figsize=(15, len(numeric_cols)), sharex=False)
-    if len(numeric_cols) == 1:
-        axes = [axes]
+    if plot:
+        fig, axes = plt.subplots(len(numeric_cols), 1, figsize=(15, len(numeric_cols)), sharex=False)
+        if len(numeric_cols) == 1:
+            axes = [axes]
     
     # Prepare comparison data
     comparison_data = []
@@ -1022,75 +1065,75 @@ def plot_cohort_feature_comparison(co_features, fl_features, title=None, plot_mi
             'fl_max': fl_stats.get('max', 0)
         })
     
-    # Plot each feature
-    for i, data in enumerate(comparison_data):
-        ax = axes[i]
-        
-        # Plot CO cohort
-        co_x_pos = 0.75
-        # Plot min/max whiskers if requested
-        if plot_minmax:
-            ax.plot([data['co_min'], data['co_max']], [co_x_pos, co_x_pos], color='blue', linewidth=2, alpha=0.7)
-        # Plot IQR box
-        ax.plot([data['co_q1'], data['co_q3']], [co_x_pos, co_x_pos], color='blue', linewidth=6, alpha=0.5)
-        # Plot mean as circle
-        ax.plot(data['co_mean'], co_x_pos, 'o', color='blue', markersize=8, label='CO cohort' if i == 0 else "")
-        # Plot median as square
-        ax.plot(data['co_median'], co_x_pos, 's', color='blue', markersize=6, alpha=0.8, label='CO cohort' if i == 0 else "")
-        
-        # Plot FL cohort
-        fl_x_pos = 0.25
-        # Plot min/max whiskers if requested
-        if plot_minmax:
-            ax.plot([data['fl_min'], data['fl_max']], [fl_x_pos, fl_x_pos], color='red', linewidth=2, alpha=0.7)
-        # Plot IQR box
-        ax.plot([data['fl_q1'], data['fl_q3']], [fl_x_pos, fl_x_pos], color='red', linewidth=6, alpha=0.5)
-        # Plot mean as circle
-        ax.plot(data['fl_mean'], fl_x_pos, 'o', color='red', markersize=8, label='FL cohort' if i == 0 else "")
-        # Plot median as square
-        ax.plot(data['fl_median'], fl_x_pos, 's', color='red', markersize=6, alpha=0.8, label='FL cohort' if i == 0 else "")
+    if plot:
+        # Plot each feature
+        for i, data in enumerate(comparison_data):
+            ax = axes[i]
+
+            # Plot CO cohort
+            co_x_pos = 0.75
+            # Plot min/max whiskers if requested
+            if plot_minmax:
+                ax.plot([data['co_min'], data['co_max']], [co_x_pos, co_x_pos], color='blue', linewidth=2, alpha=0.7)
+            # Plot IQR box
+            ax.plot([data['co_q1'], data['co_q3']], [co_x_pos, co_x_pos], color='blue', linewidth=6, alpha=0.5)
+            # Plot mean as circle
+            ax.plot(data['co_mean'], co_x_pos, 'o', color='blue', markersize=8, label='CO cohort' if i == 0 else "")
+            # Plot median as square
+            ax.plot(data['co_median'], co_x_pos, 's', color='blue', markersize=6, alpha=0.8, label='CO cohort' if i == 0 else "")
+
+            # Plot FL cohort
+            fl_x_pos = 0.25
+            # Plot min/max whiskers if requested
+            if plot_minmax:
+                ax.plot([data['fl_min'], data['fl_max']], [fl_x_pos, fl_x_pos], color='red', linewidth=2, alpha=0.7)
+            # Plot IQR box
+            ax.plot([data['fl_q1'], data['fl_q3']], [fl_x_pos, fl_x_pos], color='red', linewidth=6, alpha=0.5)
+            # Plot mean as circle
+            ax.plot(data['fl_mean'], fl_x_pos, 'o', color='red', markersize=8, label='FL cohort' if i == 0 else "")
+            # Plot median as square
+            ax.plot(data['fl_median'], fl_x_pos, 's', color='red', markersize=6, alpha=0.8, label='FL cohort' if i == 0 else "")
     
-        # Special handling for cosinor_acrophase_time: set full 24-hour range and HH:MM format
-        if data['feature'] == 'cosinor_acrophase_time':
-            # Set x-axis to cover full 24-hour period (0 to 1440 minutes)
-            ax.set_xlim(0, 1440)
-            # Set custom x-axis ticks for every 4 hours (0, 4, 8, 12, 16, 20, 24)
-            x_ticks = [0, 240, 480, 720, 960, 1200, 1440]
-            x_tick_labels = ['00:00', '04:00', '08:00', '12:00', '16:00', '20:00', '24:00']
-            ax.set_xticks(x_ticks)
-            ax.set_xticklabels(x_tick_labels)
-        else:
-            # Set individual x-axis scale for other features
-            all_vals = [data['co_min'], data['co_max'], data['fl_min'], data['fl_max']]
-            margin = 0.1 * (max(all_vals) - min(all_vals))
-            ax.set_xlim(min(all_vals) - margin, max(all_vals) + margin)
-        
-        ax.set_ylim(0, 1)
-        ax.set_yticks([])
-        ax.set_ylabel(data['feature'], rotation=0, labelpad=80, fontsize=9, va='center')
-        ax.grid(True, alpha=0.3, axis='x')
-    
-    # Create custom legend handles in desired order
-    from matplotlib.lines import Line2D
-    custom_handles = [
+            # Special handling for cosinor_acrophase_time: set full 24-hour range and HH:MM format
+            if data['feature'] == 'cosinor_acrophase_time':
+                # Set x-axis to cover full 24-hour period (0 to 1440 minutes)
+                ax.set_xlim(0, 1440)
+                # Set custom x-axis ticks for every 4 hours (0, 4, 8, 12, 16, 20, 24)
+                x_ticks = [0, 240, 480, 720, 960, 1200, 1440]
+                x_tick_labels = ['00:00', '04:00', '08:00', '12:00', '16:00', '20:00', '24:00']
+                ax.set_xticks(x_ticks)
+                ax.set_xticklabels(x_tick_labels)
+            else:
+                # Set individual x-axis scale for other features
+                all_vals = [data['co_min'], data['co_max'], data['fl_min'], data['fl_max']]
+                margin = 0.1 * (max(all_vals) - min(all_vals))
+                ax.set_xlim(min(all_vals) - margin, max(all_vals) + margin)
+
+            ax.set_ylim(0, 1)
+            ax.set_yticks([])
+            ax.set_ylabel(data['feature'], rotation=0, labelpad=80, fontsize=9, va='center')
+            ax.grid(True, alpha=0.3, axis='x')
+
+        # Create custom legend handles in desired order
+        custom_handles = [
         Line2D([0], [0], marker='o', color='blue', markersize=8, linestyle='', label='CO cohort (mean)'),
         Line2D([0], [0], marker='s', color='blue', markersize=6, linestyle='', label='CO cohort (median)'),
         Line2D([0], [0], marker='o', color='red', markersize=8, linestyle='', label='FL cohort (mean)'),
         Line2D([0], [0], marker='s', color='red', markersize=6, linestyle='', label='FL cohort (median)')
-    ]
-    
-    # Legend above first subplot
-    axes[0].legend(handles=custom_handles, loc='lower center', bbox_to_anchor=(0.5, 1.05), ncol=2)
-    
-    title_suffix = " with Min/Max" if plot_minmax else ""
-    plt.suptitle(title or f'Cohort Comparison: Quartiles, Mean, and Median per Feature{title_suffix}', fontsize=14)
-    plt.tight_layout(rect=[0.05,0,0.95,0.97])
-    plt.show()
+        ]
+
+        # Legend above first subplot
+        axes[0].legend(handles=custom_handles, loc='lower center', bbox_to_anchor=(0.5, 1.05), ncol=2)
+
+        title_suffix = " with Min/Max" if plot_minmax else ""
+        plt.suptitle(title or f'Cohort Comparison: Quartiles, Mean, and Median per Feature{title_suffix}', fontsize=14)
+        plt.tight_layout(rect=[0.05,0,0.95,0.97])
+        plt.show()
 
     return comparison_data
 
 
-def extract_features_to_dataframe(individual_features):
+def extract_features_to_dataframe(individual_features, sample_size=None):
     """
     Extract individual features from the nested structure and organize into a DataFrame.
     
@@ -1101,6 +1144,8 @@ def extract_features_to_dataframe(individual_features):
         pd.DataFrame: DataFrame with one row per individual and columns for each feature
     """
     rows = []
+    if sample_size is not None:
+        individual_features = random.sample(individual_features, min(sample_size, len(individual_features)))
     
     for i, individual in enumerate(individual_features):
         row = {'individual_id': i}
