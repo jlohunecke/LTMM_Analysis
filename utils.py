@@ -1927,7 +1927,7 @@ def plot_individual_circadian_rhythm(file_path, column='enmo', title=None, figsi
 
 
 def plot_all_circadian_rhythms(file_names=None, data_dir="minute_level_modified", column='enmo', 
-                              title="24-Hour Circadian Rhythms - All Samples"):
+                              title="24-Hour Circadian Rhythms - All Samples", limit=None):
     """
     Plot 24-hour circadian rhythms for all samples in a 2-column grid layout.
     Shows individual days as light grey lines and mean as bold line for each sample.
@@ -1956,6 +1956,8 @@ def plot_all_circadian_rhythms(file_names=None, data_dir="minute_level_modified"
         file_names.sort()  # Sort for consistent ordering
     
     # Calculate grid layout
+    if limit is not None:
+        file_names = file_names[:limit]
     n_samples = len(file_names)
     n_cols = 2  # 2 columns as requested
     n_rows = (n_samples + 1) // 2  # Calculate rows needed
@@ -1976,6 +1978,8 @@ def plot_all_circadian_rhythms(file_names=None, data_dir="minute_level_modified"
     
     # Plot each sample
     for i, filename in enumerate(file_names):
+        if limit is not None and i >= limit:
+            break
         row = i // n_cols
         col = i % n_cols
         ax = axes[row, col]
@@ -2192,6 +2196,7 @@ def demographics_table(file, file_names):
     column_rename = {
         'Age': 'Age (years)',
         'Gender(0-male,1-female)': 'Gender (% women)',
+        'MMSE': " Mini Mental Status Exam",
         '6 Months Fall': 'No. of falls in the past 6 months',
         ' yr almost': 'No. of missteps in the past year',
         'DGI': 'Dynamic Gait Index',
