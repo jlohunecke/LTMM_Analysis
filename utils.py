@@ -1016,7 +1016,7 @@ def load_cohort_data(modified_dir="minute_level_modified", header_dir="headers",
         except Exception as e:
             print(f"Error processing {fname}: {e}")
 
-    return data_handlers, cosinor_age_inputs
+    return data_handlers, cosinor_age_inputs, files_to_process
 
 def plot_cohort_feature_comparison(co_features, fl_features, title=None, plot_minmax=True, plot=True, sample_size=None):
     """
