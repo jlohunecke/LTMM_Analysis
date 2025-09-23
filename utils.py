@@ -770,10 +770,9 @@ def save_modified_timeseries(
                 df_filled.loc[non_wear_day_mask, 'z'] = wear_mean_z
                 df_filled.loc[non_wear_night_mask, 'z'] = 0.0
 
-        # Ensure ENMO column is present
-        if 'enmo' not in df_filled.columns:
-            df_filled['enmo'] = np.sqrt(df_filled['x']**2 + df_filled['y']**2 + df_filled['z']**2) - 1
-            df_filled['enmo'] = df_filled['enmo'].clip(lower=0)
+
+        df_filled['enmo'] = np.sqrt(df_filled['x']**2 + df_filled['y']**2 + df_filled['z']**2) - 1
+        df_filled['enmo'] = df_filled['enmo'].clip(lower=0)
 
         # Save to CSV with ENMO column included
         cols_to_save = [c for c in ['timestamp', 'x', 'y', 'z', 'enmo'] if c in df_filled.columns]
@@ -944,7 +943,7 @@ def compare_cohorts_daily_signal(
     plt.tight_layout(rect=[0, 0, 1, 0.95])
     plt.show()
 
-def load_cohort_data(modified_dir="minute_level_modified", header_dir="headers", pattern="CO*.csv", preprocess_args=None, file_names=None):
+def load_cohort_data(modified_dir="minute_level_modified", header_dir="headers", pattern="CO*.csv", preprocess_args=None, file_names=None, data_type="enmo-g"):
     """
     Load accelerometer data handlers and age/gender info for a specific cohort.
     
@@ -980,14 +979,20 @@ def load_cohort_data(modified_dir="minute_level_modified", header_dir="headers",
             header_path = os.path.join(header_dir, fname.replace('.csv', '.hea'))
 
             if os.path.isfile(file_path) and os.path.isfile(header_path):
+
+                if data_type == "accelerometer-g":
+                    data_columns = ['x', 'y', 'z']
+                else:
+                    data_columns = ['enmo']
+
                 handler = csa.datahandlers.GenericDataHandler(
                     file_path=file_path,
                     data_format='csv',
-                    data_type='accelerometer-g',
+                    data_type=data_type,
                     time_format='datetime',
                     time_column='timestamp',
-                    time_zone="UTC",
-                    data_columns=['x', 'y', 'z'],
+                    time_zone=None,
+                    data_columns=data_columns,
                     preprocess_args=preprocess_args,
                     verbose=False
                 )
@@ -1062,7 +1067,7 @@ def plot_cohort_feature_comparison(co_features, fl_features, title=None, plot_mi
             'fl_q1': fl_stats.get('25%', 0),
             'fl_q3': fl_stats.get('75%', 0),
             'fl_min': fl_stats.get('min', 0),
-            'fl_max': fl_stats.get('max', 0)
+            'fl_max': fl_stats.get('max', 0),
         })
     
     if plot:
@@ -1130,7 +1135,7 @@ def plot_cohort_feature_comparison(co_features, fl_features, title=None, plot_mi
         plt.tight_layout(rect=[0.05,0,0.95,0.97])
         plt.show()
 
-    return comparison_data
+    return comparison_data, df_co, df_fl
 
 
 def extract_features_to_dataframe(individual_features, sample_size=None):
@@ -2177,6 +2182,7 @@ def demographics_table(file, file_names):
         'Age',
         'Gender(0-male,1-female)',
         'MMSE',
+        'Year Fall',
         '6 Months Fall',
         ' yr almost',  # missteps in past year
         'DGI',
@@ -2197,6 +2203,7 @@ def demographics_table(file, file_names):
         'Age': 'Age (years)',
         'Gender(0-male,1-female)': 'Gender (% women)',
         'MMSE': " Mini Mental Status Exam",
+        'Year Fall': 'No. of falls in the past year',
         '6 Months Fall': 'No. of falls in the past 6 months',
         ' yr almost': 'No. of missteps in the past year',
         'DGI': 'Dynamic Gait Index',
